@@ -21,11 +21,11 @@ PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 ALLOWED_FILE_TYPES = ("image", "text")
 ALLOWED_CHANNEL_TYPES = (discord.ChannelType.text, discord.ChannelType.public_thread, discord.ChannelType.private_thread, discord.ChannelType.private)
 
-EMBED_COLOR_COMPLETE = discord.Color.dark_green()
+EMBED_COLOR_COMPLETE = discord.Color.green()
 EMBED_COLOR_INCOMPLETE = discord.Color.orange()
 
 STREAMING_INDICATOR = " ⚪"
-EDIT_DELAY_SECONDS = 1
+EDIT_DELAY_SECONDS = 0.25
 
 MAX_MESSAGE_NODES = 100
 
@@ -69,7 +69,84 @@ class MsgNode:
 
 @discord_client.event
 async def on_message(new_msg):
-    global msg_nodes, last_task_time
+    global msg_nodes, last_task_time, cfg
+    
+    # Simple command handling
+    if new_msg.content.startswith("/") and isinstance(new_msg.author, discord.Member) and new_msg.author.guild_permissions.administrator:
+        command = new_msg.content[1:].split()[0].lower()
+        args = new_msg.content.split()[1:]
+        
+        # Help command
+        if command == "help":
+            help_text = """Available Commands (Admin only):
+- !model - Show current model
+- !model provider/model - Change model
+- !showconfig - Show current configuration
+- !reload - Reload configuration"""
+            await new_msg.reply(help_text)
+            return
+            
+        # Show current model
+        elif command == "model" and not args:
+            await new_msg.reply(f"Current model: {cfg['model']}")
+            return
+            
+        # Change model
+        elif command == "model" and args:
+            try:
+                new_model = args[0]
+                provider, model = new_model.split("/", 1)
+                if provider in cfg["providers"]:
+                    cfg["model"] = new_model
+                    # Update config file
+                    with open("config.json", "r+") as f:
+                        config = json.load(f)
+                        for section in config.values():
+                            if "model" in section:
+                                section["model"] = new_model
+                        f.seek(0)
+                        json.dump(config, f, indent=4)
+                        f.truncate()
+                    await new_msg.reply(f"Model updated to: {new_model}")
+                else:
+                    await new_msg.reply(f"Invalid provider. Available: {', '.join(cfg['providers'].keys())}")
+                return
+            except Exception as e:
+                await new_msg.reply(f"Error updating model: {str(e)}")
+                return
+                
+        # Show config
+        elif command == "showconfig":
+            # Show safe config (exclude sensitive data)
+            safe_config = {k: v for k, v in cfg.items() if k not in ["bot_token", "providers"]}
+            config_text = "Current configuration:\n```\n"
+            config_text += json.dumps(safe_config, indent=2)
+            config_text += "\n```"
+            await new_msg.reply(config_text)
+            return
+            
+        # Reload config
+        elif command == "reload":
+            try:
+                global get_config
+                cfg.update(get_config())
+                await new_msg.reply("Configuration reloaded successfully.")
+                return
+            except Exception as e:
+                await new_msg.reply(f"Error reloading configuration: {str(e)}")
+                return
+
+    # Original message handling
+    if (
+        new_msg.channel.type not in ALLOWED_CHANNEL_TYPES
+        or (new_msg.channel.type != discord.ChannelType.private and discord_client.user not in new_msg.mentions)
+        or new_msg.author.bot
+    ):
+        return
+
+    cfg = get_config()  # Refresh config for each message
+
+    # Rest of the original function continues unchanged...
 
     if (
         new_msg.channel.type not in ALLOWED_CHANNEL_TYPES
