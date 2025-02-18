@@ -21,7 +21,7 @@ PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 ALLOWED_FILE_TYPES = ("image", "text")
 ALLOWED_CHANNEL_TYPES = (discord.ChannelType.text, discord.ChannelType.public_thread, discord.ChannelType.private_thread, discord.ChannelType.private)
 
-EMBED_COLOR_COMPLETE = discord.Color.green()
+EMBED_COLOR_COMPLETE = discord.Color.dark_green()
 EMBED_COLOR_INCOMPLETE = discord.Color.orange()
 
 STREAMING_INDICATOR = " ⚪"
@@ -39,7 +39,9 @@ cfg = get_config()
 
 intents = discord.Intents.default()
 intents.message_content = True
-activity = discord.CustomActivity(name=cfg["status_message"][:128] or "github.com/jakobdylanc/llmcord.py")
+# Create status message showing both custom status and current model
+status_text = f"Model: {cfg['model']}"[:128]
+activity = discord.CustomActivity(name=status_text)
 discord_client = discord.Client(intents=intents, activity=activity)
 
 httpx_client = httpx.AsyncClient()
@@ -49,7 +51,6 @@ last_task_time = None
 
 if cfg["client_id"] != 123456789:
     print(f"\nBOT INVITE URL:\nhttps://discord.com/api/oauth2/authorize?client_id={cfg['client_id']}&permissions=412317273088&scope=bot\n")
-
 
 @dataclass
 class MsgNode:
@@ -72,7 +73,7 @@ async def on_message(new_msg):
     global msg_nodes, last_task_time, cfg
     
     # Simple command handling
-    if new_msg.content.startswith("/") and isinstance(new_msg.author, discord.Member) and new_msg.author.guild_permissions.administrator:
+    if new_msg.content.startswith("!") and isinstance(new_msg.author, discord.Member) and new_msg.author.guild_permissions.administrator:
         command = new_msg.content[1:].split()[0].lower()
         args = new_msg.content.split()[1:]
         
@@ -82,6 +83,7 @@ async def on_message(new_msg):
 - !model - Show current model
 - !model provider/model - Change model
 - !showconfig - Show current configuration
+- !editprompt - Edit prompt
 - !reload - Reload configuration"""
             await new_msg.reply(help_text)
             return
@@ -124,7 +126,25 @@ async def on_message(new_msg):
             config_text += "\n```"
             await new_msg.reply(config_text)
             return
-            
+        # Edit Prompt
+        elif command == "editprompt" and args:
+            try:
+                cfg["system_prompt"] = " ".join(args)
+                # Update config file
+                with open("config.json", "r+") as f:
+                    config = json.load(f)
+                    for section in config.values():
+                        if "system_prompt" in section:
+                            section["system_prompt"] = " ".join(args)
+                    f.seek(0)
+                    json.dump(config, f, indent=4)
+                    f.truncate()
+                await new_msg.reply(f"Prompt updated to: {' '.join(args)}")
+                return
+            except Exception as e:
+                await new_msg.reply(f"Error updating prompt: {str(e)}")
+                return
+        
         # Reload config
         elif command == "reload":
             try:
