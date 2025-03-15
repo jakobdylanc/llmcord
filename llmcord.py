@@ -6,6 +6,7 @@ import logging
 from typing import Literal, Optional
 
 import discord
+from discord.ext import commands
 import httpx
 from openai import AsyncOpenAI
 import yaml
@@ -15,7 +16,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s: %(message)s",
 )
 
-VISION_MODEL_TAGS = ("gpt-4", "claude-3", "gemini", "pixtral", "llava", "vision", "vl")
+VISION_MODEL_TAGS = ("gpt-4", "claude-3", "gemini", "pixtral", "llava", "vision", "vl", "gemma3")
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 
 ALLOWED_FILE_TYPES = ("image", "text")
@@ -69,7 +70,7 @@ class MsgNode:
 @discord_client.event
 async def on_message(new_msg):
     global msg_nodes, last_task_time
-
+    await discord_client.change_presence(status=discord.Status.online, activity=activity)
     is_dm = new_msg.channel.type == discord.ChannelType.private
 
     if (not is_dm and discord_client.user not in new_msg.mentions) or new_msg.author.bot:
@@ -193,7 +194,7 @@ async def on_message(new_msg):
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
     if system_prompt := cfg["system_prompt"]:
-        system_prompt_extras = [f"Today's date: {dt.now().strftime('%B %d %Y')}."]
+        system_prompt_extras = [f"Today's date: {dt.now().strftime('%B %d %Y')}. Only reference the current date if it appears related to the question."]
         if accept_usernames:
             system_prompt_extras.append("User's names are their Discord IDs and should be typed as '<@ID>'.")
 
@@ -266,6 +267,7 @@ async def on_message(new_msg):
                     await msg_nodes[response_msg.id].lock.acquire()
 
     except Exception:
+        await discord_client.change_presence(status=discord.Status.offline, activity=activity)
         logging.exception("Error while generating response")
 
     for response_msg in response_msgs:
