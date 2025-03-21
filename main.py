@@ -5,7 +5,7 @@ import os
 
 from config import Config
 from discord_client import LLMCordClient
-
+from database import Database  # Import the Database module
 
 async def main():
     """Main entry point for the LLMCord bot."""
@@ -22,7 +22,11 @@ async def main():
     if not config.bot_token:
         logging.error("Bot token not found in configuration. Please set 'bot_token' in your config file.")
         return
-        
+    
+    # Initialize database
+    db = Database()
+    logging.info("Database initialized")
+    
     # Initialize and run the Discord client
     client = LLMCordClient(config)
     
