@@ -1,7 +1,13 @@
+# This gitignore is a whitelist. Inspired by https://rgbcu.be/blog/gitignore
+
 *
 
 !.gitignore
 
 !*.md
 !*.py
-!config-example.json
+
+!Dockerfile
+!config-example.yaml
+!docker-compose.yaml
+!requirements.txt

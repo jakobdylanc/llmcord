@@ -1,0 +1,4 @@
+discord.py
+httpx
+openai
+pyyaml
