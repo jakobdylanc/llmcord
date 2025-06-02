@@ -3,6 +3,8 @@
 *
 
 !.gitignore
+!.github
+!dependabot.yml
 
 !*.md
 !*.py
