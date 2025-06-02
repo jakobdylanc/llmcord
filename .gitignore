@@ -5,6 +5,7 @@
 !.gitignore
 !.github
 !dependabot.yml
+!release.yml
 
 !*.md
 !*.py
