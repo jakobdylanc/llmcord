@@ -4,6 +4,7 @@
 
 !.gitignore
 !.github
+!workflows
 !dependabot.yml
 !release.yml
 
