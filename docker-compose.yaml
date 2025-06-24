@@ -1,7 +1,0 @@
-services:
-  container:
-    build: .
-    network_mode: host
-    restart: unless-stopped
-    volumes:
-      - ./:/app:ro
