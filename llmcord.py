@@ -12,6 +12,8 @@ import httpx
 from openai import AsyncOpenAI
 import yaml
 
+import io
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
@@ -63,6 +65,38 @@ class MsgNode:
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
+
+@discord_bot.tree.command(name="models", description=f"Complete list of models available")
+async def models(interaction: discord.Interaction):
+    await interaction.response.defer()
+    
+    global curr_model
+
+    provider, model = curr_model.split("/", 1)
+
+    base_url = config["providers"][provider]["base_url"]
+    api_key = config["providers"][provider].get("api_key", "sk-no-key-required")
+
+    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    
+    if user_is_admin := interaction.user.id in config["permissions"]["users"]["admin_ids"]:
+        models_list = await openai_client.models.list()
+        available_models = sorted([model.id async for model in models_list])
+        
+        if not available_models:
+            reply = f"No models found for `{provider}`."
+            await interaction.followup.send(reply)
+        else:
+            header = f"**Available models for `{provider}`:**\n"
+            models_text = "\n".join(available_models)
+                
+            file_content = io.BytesIO(models_text.encode('utf-8'))
+            discord_file = discord.File(file_content, filename=f"{provider}_models.txt")
+            await interaction.followup.send(header, file=discord_file)
+            
+    else:
+        output = "You don't have permission to view all models."
+    
 
 @discord_bot.tree.command(name="model", description="View or switch the current model")
 async def model_command(interaction: discord.Interaction, model: str) -> None:
