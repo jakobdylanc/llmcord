@@ -9,7 +9,7 @@ import discord
 from discord.app_commands import Choice
 from discord.ext import commands
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AsyncAzureOpenAI
 import yaml
 
 logging.basicConfig(
@@ -141,9 +141,15 @@ async def on_message(new_msg: discord.Message) -> None:
     provider, model = provider_slash_model.split("/", 1)
     model_parameters = config["models"].get(provider_slash_model, None)
 
-    base_url = config["providers"][provider]["base_url"]
     api_key = config["providers"][provider].get("api_key", "sk-no-key-required")
-    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    if provider == "azure":
+        azure_endpoint = config["providers"][provider].get("azure_endpoint", "")
+        azure_deployment = config["providers"][provider].get("azure_deployment", "")
+        api_version = config["providers"][provider].get("api_version", "2023-05-15")
+        openai_client = AsyncAzureOpenAI(azure_endpoint=azure_endpoint, azure_deployment=azure_deployment, api_version=api_version, api_key=api_key)
+    else:
+        base_url = config["providers"][provider]["base_url"]
+        openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
     accept_images = any(x in model.lower() for x in VISION_MODEL_TAGS)
     accept_usernames = any(x in provider_slash_model.lower() for x in PROVIDERS_SUPPORTING_USERNAMES)

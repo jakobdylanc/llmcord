@@ -48,6 +48,11 @@ providers:
     base_url: http://localhost:1234/v1
   vllm:
     base_url: http://localhost:8000/v1
+  azure:
+    azure_endpoint: https://cedrics-azure-openai.openai.azure.com
+    azure_deployment: gpt-4.1
+    api_version: 2025-01-01-preview
+    api_key:
 
 models:
   openai/gpt-4.1:
@@ -59,6 +64,9 @@ models:
   x-ai/grok-3-latest:
     search_parameters:
       mode: auto
+  
+  azure/gpt-4.1:
+    temperature: 1.0
 
   openrouter/anthropic/claude-sonnet-4:
 
