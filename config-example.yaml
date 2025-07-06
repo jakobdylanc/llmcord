@@ -49,7 +49,7 @@ providers:
   vllm:
     base_url: http://localhost:8000/v1
   azure:
-    azure_endpoint: https://cedrics-azure-openai.openai.azure.com
+    base_url: https://your-openai-example.openai.azure.com
     azure_deployment: gpt-4.1
     api_version: 2025-01-01-preview
     api_key:
