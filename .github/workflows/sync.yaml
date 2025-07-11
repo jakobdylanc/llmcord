@@ -1,0 +1,35 @@
+name: Auto Rebase Fork
+
+on:
+  schedule:
+    - cron: '30 * * * *'  # Runs every 30 minutes
+  workflow_dispatch:     # Allows manual triggering
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout your fork
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/jakobdylanc/llmcord.git
+          git fetch upstream
+
+      - name: Rebase onto upstream/main
+        run: |
+          git checkout main
+          git rebase upstream/main
+
+      - name: Push changes
+        run: |
+          git push origin main --force-with-lease
