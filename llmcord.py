@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 from base64 import b64encode
 from dataclasses import dataclass, field
@@ -34,7 +35,18 @@ def get_config(filename: str = "config.yaml") -> dict[str, Any]:
         return yaml.safe_load(file)
 
 
-config = get_config()
+def parse_args():
+    parser = argparse.ArgumentParser(description="LLM Discord Bot")
+    parser.add_argument(
+        "--config", 
+        default="config.yaml", 
+        help="Path to the configuration file (default: config.yaml)"
+    )
+    return parser.parse_args()
+
+
+args = parse_args()
+config = get_config(args.config)
 curr_model = next(iter(config["models"]))
 
 msg_nodes = {}
@@ -86,7 +98,7 @@ async def model_autocomplete(interaction: discord.Interaction, curr_str: str) ->
     global config
 
     if curr_str == "":
-        config = await asyncio.to_thread(get_config)
+        config = await asyncio.to_thread(get_config, args.config)
 
     choices = [Choice(name=f"○ {model}", value=model) for model in config["models"] if model != curr_model and curr_str.lower() in model.lower()][:24]
     choices += [Choice(name=f"◉ {curr_model} (current)", value=curr_model)] if curr_str.lower() in curr_model.lower() else []
@@ -114,7 +126,7 @@ async def on_message(new_msg: discord.Message) -> None:
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
     channel_ids = set(filter(None, (new_msg.channel.id, getattr(new_msg.channel, "parent_id", None), getattr(new_msg.channel, "category_id", None))))
 
-    config = await asyncio.to_thread(get_config)
+    config = await asyncio.to_thread(get_config, args.config)
 
     allow_dms = config.get("allow_dms", True)
 

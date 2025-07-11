@@ -10,4 +10,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY llmcord.py .
 
-CMD ["python", "llmcord.py"]
+CMD ["python", "llmcord.py", "--config", "/config/config.yaml"]
