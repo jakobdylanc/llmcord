@@ -29,7 +29,7 @@ EDIT_DELAY_SECONDS = 1
 MAX_MESSAGE_NODES = 500
 
 
-def get_config(filename: str = "config.yaml") -> dict[str, Any]:
+def get_config(filename: str = "/config/config.yaml") -> dict[str, Any]:
     with open(filename, encoding="utf-8") as file:
         return yaml.safe_load(file)
 
@@ -143,6 +143,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
     base_url = config["providers"][provider]["base_url"]
     api_key = config["providers"][provider].get("api_key", "sk-no-key-required")
+    api_version = config["providers"][provider].get("api_version", None)
     openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
     accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
@@ -254,10 +255,13 @@ async def on_message(new_msg: discord.Message) -> None:
 
     use_plain_responses = config.get("use_plain_responses", False)
     max_message_length = 2000 if use_plain_responses else (4096 - len(STREAMING_INDICATOR))
+    extra_query_params = None
+    if api_version is not None:
+        extra_query_params = {"api-version": api_version}
 
     try:
         async with new_msg.channel.typing():
-            async for curr_chunk in await openai_client.chat.completions.create(model=model, messages=messages[::-1], stream=True, extra_body=model_parameters):
+            async for curr_chunk in await openai_client.chat.completions.create(model=model, messages=messages[::-1], stream=True, extra_body=model_parameters, extra_query=extra_query_params):
                 if finish_reason != None:
                     break
 
