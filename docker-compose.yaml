@@ -4,4 +4,4 @@ services:
     network_mode: host
     restart: unless-stopped
     volumes:
-      - ./:/app:ro
+      - ./config.yaml:/config/config.yaml:ro
