@@ -17,7 +17,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s: %(message)s",
 )
 
-VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
+VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl", "deepseek")
+
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 
 EMBED_COLOR_COMPLETE = discord.Color.dark_green()
