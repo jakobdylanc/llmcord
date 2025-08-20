@@ -44,12 +44,16 @@ providers:
     api_key: 
   openai:
     base_url: https://api.openai.com/v1
-    api_key: 
+    api_key:
   openrouter:
     base_url: https://openrouter.ai/api/v1
     api_key: 
   x-ai:
     base_url: https://api.x.ai/v1
+    api_key:
+
+  deepseek:
+    base_url: https://api.deepseek.com/v1
     api_key: 
 
   # Local providers:
@@ -61,6 +65,8 @@ providers:
     base_url: http://localhost:8000/v1
 
 models:
+  deepseek/deepseek-chat:
+  deepseek/deepseek-coder:
   openai/gpt-5:
     reasoning_effort: high
     verbosity: medium
