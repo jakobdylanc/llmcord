@@ -245,9 +245,16 @@ async def on_message(new_msg: discord.Message) -> None:
     if system_prompt := config["system_prompt"]:
         now = datetime.now().astimezone()
 
-        system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
-        if accept_usernames:
-            system_prompt += "\nUser's names are their Discord IDs and should be typed as '<@ID>'."
+        # system_prompt = (system_prompt.replace(
+        #     "{date}", now.strftime("%B %d %Y"))
+        #                  .replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip())
+        system_prompt = (system_prompt
+                         .replace("{date}", now.strftime("%B %d %Y"))
+                         .replace("{time}", now.strftime("%H:%M:%S %Z%z"))
+                         .replace("{username}", new_msg.author.display_name)
+                         .strip())
+        #if accept_usernames:
+        #    system_prompt += "\nUser's names are their Discord IDs and should be typed as '<@ID>'."
 
         messages.append(dict(role="system", content=system_prompt))
 
