@@ -7,6 +7,7 @@ status_message:
 max_text: 100000
 max_images: 5
 max_messages: 25
+max_token_output: 1000
 
 use_plain_responses: false
 allow_dms: true
