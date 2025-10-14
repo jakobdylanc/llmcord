@@ -183,11 +183,14 @@ async def on_message(new_msg: discord.Message) -> None:
                     + [resp.text for att, resp in zip(good_attachments, attachment_responses) if att.content_type.startswith("text")]
                 )
 
-                curr_node.images = [
-                    dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
-                    for att, resp in zip(good_attachments, attachment_responses)
-                    if att.content_type.startswith("image")
-                ]
+                if accept_images:
+                    curr_node.images = [
+                        dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
+                        for att, resp in zip(good_attachments, attachment_responses)
+                        if att.content_type.startswith("image")
+                    ]
+                else:
+                    curr_node.images = []
 
                 curr_node.role = "assistant" if curr_msg.author == discord_bot.user else "user"
 
