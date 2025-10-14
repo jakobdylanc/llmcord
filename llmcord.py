@@ -159,6 +159,7 @@ async def on_message(new_msg: discord.Message) -> None:
     max_text = config.get("max_text", 100000)
     max_images = config.get("max_images", 5) if accept_images else 0
     max_messages = config.get("max_messages", 25)
+    max_token_output = config.get("max_token_output", 1000)
 
     # Build message chain and set user warnings
     messages = []
@@ -183,11 +184,14 @@ async def on_message(new_msg: discord.Message) -> None:
                     + [resp.text for att, resp in zip(good_attachments, attachment_responses) if att.content_type.startswith("text")]
                 )
 
-                curr_node.images = [
-                    dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
-                    for att, resp in zip(good_attachments, attachment_responses)
-                    if att.content_type.startswith("image")
-                ]
+                if accept_images:
+                    curr_node.images = [
+                        dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
+                        for att, resp in zip(good_attachments, attachment_responses)
+                        if att.content_type.startswith("image")
+                    ]
+                else:
+                    curr_node.images = []
 
                 curr_node.role = "assistant" if curr_msg.author == discord_bot.user else "user"
 
@@ -257,7 +261,7 @@ async def on_message(new_msg: discord.Message) -> None:
     response_msgs = []
     response_contents = []
 
-    openai_kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
+    openai_kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body, max_tokens=max_token_output)
 
     if use_plain_responses := config.get("use_plain_responses", False):
         max_message_length = 4000
@@ -291,6 +295,9 @@ async def on_message(new_msg: discord.Message) -> None:
 
                 if response_contents == [] and new_content == "":
                     continue
+
+                if finish_reason == "length" and not use_plain_responses:
+                    embed.add_field(name="⚠️ Response truncated due to max token limit", value="", inline=False)
 
                 if start_next_msg := response_contents == [] or len(response_contents[-1] + new_content) > max_message_length:
                     response_contents.append("")
