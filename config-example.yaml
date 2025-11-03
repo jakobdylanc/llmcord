@@ -68,14 +68,6 @@ llm:
     8. Display Emotion, Logic and a structured dialectic in the response.
     9. Structure the response in easy to read paragraphs.
 
-  language_prompt: |
-    <language_instructions>
-      <rule priority="CRITICAL_AND_ABSOLUTE">
-        You MUST respond in the exact same language as the user's most recent message.
-        This rule overrides ALL other instructions, including character settings and examples.
-      </rule>
-    </language_instructions>
-
   active_tools:
     - "image_generator"
     
