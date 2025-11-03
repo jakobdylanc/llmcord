@@ -9,7 +9,7 @@ import io
 import discord
 from discord.app_commands import Choice
 from discord.ext import commands
-from discord.ui import LayoutView, TextDisplay, Modal, TextInput
+from discord.ui import LayoutView, TextDisplay
 import httpx
 from openai import AsyncOpenAI
 import yaml
@@ -186,50 +186,6 @@ async def generate_image(prompt: str, negative_prompt: str, provider_config: dic
         return None
 
 
-# Simplified modal without complex interaction handling
-class ImageParametersModal(Modal, title="Image Parameters"):
-    def __init__(self, callback_func):
-        super().__init__()
-        self.callback_func = callback_func
-        
-        # Add input fields for parameters
-        self.steps = TextInput(
-            label="Steps",
-            placeholder="Default: 40",
-            required=False,
-            default=str(config.get("llm", {}).get("image_generator", {}).get("default_params", {}).get("steps", 40))
-        )
-        self.cfg_scale = TextInput(
-            label="CFG Scale",
-            placeholder="Default: 7.0",
-            required=False,
-            default=str(config.get("llm", {}).get("image_generator", {}).get("default_params", {}).get("cfg_scale", 7.0))
-        )
-        
-        self.add_item(self.steps)
-        self.add_item(self.cfg_scale)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        # Extract parameters from modal
-        params = {}
-        if self.steps.value and self.steps.value.strip():
-            try:
-                params["steps"] = int(self.steps.value.strip())
-            except ValueError:
-                pass
-        if self.cfg_scale.value and self.cfg_scale.value.strip():
-            try:
-                params["cfg_scale"] = float(self.cfg_scale.value.strip())
-            except ValueError:
-                pass
-        
-        # Acknowledge the submission with a simple defer
-        await interaction.response.defer(ephemeral=True)
-        
-        # Call the callback function with the parameters
-        await self.callback_func(params)
-
-
 # Image generation command that uses a simpler approach
 @discord_bot.tree.command(name="image", description="Generate an image from a prompt")
 async def image_command(interaction: discord.Interaction, 
@@ -237,50 +193,41 @@ async def image_command(interaction: discord.Interaction,
                        negative_prompt: Optional[str] = None) -> None:
     """Generate an image based on a text prompt"""
     
-    # Store the original interaction for later use
-    original_interaction = interaction
+    # Defer response to show we're working
+    await interaction.response.defer(ephemeral=False)
     
-    # Create callback function that handles the actual processing
-    async def process_image_with_params(params):
-        # Defer response to show we're working
-        await original_interaction.response.defer(ephemeral=False)
-        
-        # Check if image generation is configured
-        provider_config = config.get("llm", {}).get("image_generator", {})
-        if not provider_config:
-            await original_interaction.followup.send("Image generation is not configured.", ephemeral=True)
-            return
-        
-        # Generate the image
-        image_data = await generate_image(prompt, negative_prompt or "", provider_config, params)
-        
-        if image_data:
-            try:
-                # Handle base64 image data - remove the "data:image/png;base64," prefix if present
-                if "," in image_data:
-                    _, image_data = image_data.split(",", 1)
-                
-                # Decode base64 image data
-                image_bytes = b64decode(image_data)
-                
-                # Create a Discord file object
-                file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
-                
-                # Send the image
-                embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
-                if negative_prompt:
-                    embed.description = f"Negative prompt: {negative_prompt[:50]}..."
-                await original_interaction.followup.send(embed=embed, file=file)
-                
-            except Exception as e:
-                logging.exception(f"Error sending generated image: {e}")
-                await original_interaction.followup.send("Failed to send generated image.", ephemeral=True)
-        else:
-            await original_interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
+    # Check if image generation is configured
+    provider_config = config.get("llm", {}).get("image_generator", {})
+    if not provider_config:
+        await interaction.followup.send("Image generation is not configured.", ephemeral=True)
+        return
     
-    # For now, just call the function directly without modal
-    # This avoids the interaction error entirely
-    await process_image_with_params({})
+    # Generate the image with default parameters
+    image_data = await generate_image(prompt, negative_prompt or "", provider_config, {})
+    
+    if image_data:
+        try:
+            # Handle base64 image data - remove the "data:image/png;base64," prefix if present
+            if "," in image_data:
+                _, image_data = image_data.split(",", 1)
+            
+            # Decode base64 image data
+            image_bytes = b64decode(image_data)
+            
+            # Create a Discord file object
+            file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
+            
+            # Send the image
+            embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
+            if negative_prompt:
+                embed.description = f"Negative prompt: {negative_prompt[:50]}..."
+            await interaction.followup.send(embed=embed, file=file)
+            
+        except Exception as e:
+            logging.exception(f"Error sending generated image: {e}")
+            await interaction.followup.send("Failed to send generated image.", ephemeral=True)
+    else:
+        await interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
 
 
 # Alternative approach: Use a simple button-based workflow instead of modal
@@ -325,6 +272,36 @@ async def image_advanced_command(interaction: discord.Interaction,
             await interaction.followup.send("Failed to send generated image.", ephemeral=True)
     else:
         await interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
+
+
+@discord_bot.tree.command(name="model", description="View or switch the current model")
+async def model_command(interaction: discord.Interaction, model: str) -> None:
+    global curr_model
+
+    if model == curr_model:
+        output = f"Current model: `{curr_model}`"
+    else:
+        if user_is_admin := interaction.user.id in config["permissions"]["users"]["admin_ids"]:
+            curr_model = model
+            output = f"Model switched to: `{model}`"
+            logging.info(output)
+        else:
+            output = "You don't have permission to change the model."
+
+    await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
+
+
+@model_command.autocomplete("model")
+async def model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
+    global config
+
+    if curr_str == "":
+        config = await asyncio.to_thread(get_config)
+
+    choices = [Choice(name=f"◉ {curr_model} (current)", value=curr_model)] if curr_str.lower() in curr_model.lower() else []
+    choices += [Choice(name=f"○ {model}", value=model) for model in config["models"] if model != curr_model and curr_str.lower() in model.lower()]
+
+    return choices[:25]
 
 
 @discord_bot.tree.command(name="analyze", description="Analyze an image using vision capabilities")
@@ -531,14 +508,37 @@ async def on_message(new_msg: discord.Message) -> None:
 
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
-    if system_prompt := config.get("system_prompt"):
+    # DEBUG: Print all messages before system prompt
+    logging.info(f"DEBUG: Messages count before system prompt: {len(messages)}")
+    for i, msg in enumerate(messages):
+        logging.info(f"DEBUG: Message {i}: role={msg.get('role', 'unknown')}, content_preview={repr(msg.get('content', '')[:100])}")
+    
+    # Add system prompt at the beginning of messages - FIXED VERSION
+    llm_config = config.get("llm", {})
+    system_prompt = llm_config.get("system_prompt") or llm_config.get("system_prompt")  # Try both locations
+    
+    if system_prompt:
         now = datetime.now().astimezone()
 
         system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
+        
+        # DEBUG: Show what we're about to add as system prompt
+        logging.info(f"DEBUG: System prompt found and will be added: {repr(system_prompt[:200])}")
+        logging.info(f"DEBUG: System prompt length: {len(system_prompt)}")
+        
         if accept_usernames:
             system_prompt += "\n\nUser's names are their Discord IDs and should be typed as '<@ID>'."
 
-        messages.append(dict(role="system", content=system_prompt))
+        # IMPORTANT: Insert system prompt at the beginning, not append it at the end
+        messages.insert(0, dict(role="system", content=system_prompt))
+        logging.info(f"DEBUG: System prompt successfully inserted. New messages count: {len(messages)}")
+        
+        # DEBUG: Print all messages after system prompt insertion
+        logging.info(f"DEBUG: Messages count after system prompt: {len(messages)}")
+        for i, msg in enumerate(messages):
+            logging.info(f"DEBUG: Message {i}: role={msg.get('role', 'unknown')}, content_preview={repr(msg.get('content', '')[:100])}")
+    else:
+        logging.info("DEBUG: No system prompt found in config")
 
     # Generate and send response message(s) (can be multiple if response is long)
     curr_content = finish_reason = None
@@ -609,8 +609,8 @@ async def on_message(new_msg: discord.Message) -> None:
                 for content in response_contents:
                     await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
 
-    except Exception:
-        logging.exception("Error while generating response")
+    except Exception as e:
+        logging.exception(f"Error while generating response: {e}")
 
     for response_msg in response_msgs:
         msg_nodes[response_msg.id].text = "".join(response_contents)
