@@ -15,9 +15,11 @@ llm:
   
   # --- APIプロバイダー設定 ---
   providers:
-    ollama:
+    ollama_1:
       base_url: http://localhost-orIP:YourPortNumber/v1
-    
+   #ollama_2:
+     #base_url: http://localhost-orIP:YourPortNumber/v1
+     
   # --- 画像生成設定 (Stable Diffusion WebUI Forge) ---
   image_generator:
     forge_url: "http://localhost-orIP:YourPortNumber/sdui(sdui-ForKoboldcpp)"
