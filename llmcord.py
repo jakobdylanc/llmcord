@@ -1,9 +1,10 @@
 import asyncio
-from base64 import b64encode
+from base64 import b64encode, b64decode
 from dataclasses import dataclass, field
 from datetime import datetime
 import logging
 from typing import Any, Literal, Optional
+import io
 
 import discord
 from discord.app_commands import Choice
@@ -36,6 +37,34 @@ def get_config(filename: str = "config.yaml") -> dict[str, Any]:
 
 
 config = get_config()
+
+# Fix: Provide default values if keys are missing
+if "models" not in config:
+    # Create models structure from llm.model if it exists
+    llm_model = config.get("llm", {}).get("model")
+    if llm_model:
+        config["models"] = {llm_model: {}}
+    else:
+        config["models"] = {"ollama/Gelato-30B-A3B-MXFP4_MOE": {}}
+
+# Create a proper permissions structure based on your existing config
+if "permissions" not in config:
+    config["permissions"] = {
+        "users": {
+            "admin_ids": config.get("admin_user_ids", []),
+            "allowed_ids": [],
+            "blocked_ids": []
+        },
+        "roles": {
+            "allowed_ids": [],
+            "blocked_ids": []
+        },
+        "channels": {
+            "allowed_ids": config.get("allowed_channel_ids", []),
+            "blocked_ids": []
+        }
+    }
+
 curr_model = next(iter(config["models"]))
 
 msg_nodes = {}
@@ -63,6 +92,120 @@ class MsgNode:
     parent_msg: Optional[discord.Message] = None
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+# Image generation function for local providers
+async def generate_image(prompt: str, provider_config: dict) -> Optional[str]:
+    """Generate an image using a local provider (like Stable Diffusion WebUI Forge)"""
+    try:
+        forge_url = provider_config.get("forge_url")
+        if not forge_url:
+            logging.error("Forge URL not configured for image generation")
+            return None
+            
+        # Default parameters from config
+        default_params = provider_config.get("default_params", {})
+        default_model = provider_config.get("default_model", "novaMatureXL_v35")
+        default_size = provider_config.get("default_size", "768x768")
+        
+        # Parse size
+        width, height = map(int, default_size.split('x'))
+        
+        # Prepare the payload - corrected for WebUI Forge API
+        payload = {
+            "prompt": prompt,
+            "negative_prompt": default_params.get("negative_prompt", ""),
+            "steps": default_params.get("steps", 40),
+            "cfg_scale": default_params.get("cfg_scale", 7.0),
+            "sampler_name": default_params.get("sampler_name", "DPM++ 2M Karras"),
+            "restore_faces": default_params.get("restore_faces", False),
+            "width": width,
+            "height": height,
+            "override_settings": {
+                "sd_model_checkpoint": default_model
+            }
+        }
+        
+        # Add any additional parameters from config
+        for key, value in default_params.items():
+            if key not in ["negative_prompt", "steps", "cfg_scale", "sampler_name", "restore_faces"]:
+                payload[key] = value
+        
+        headers = {"Content-Type": "application/json"}
+        
+        logging.info(f"Sending image generation request to {forge_url}")
+        logging.info(f"Payload: {payload}")
+        
+        async with httpx.AsyncClient(timeout=provider_config.get("timeout", 720.0)) as client:
+            response = await client.post(
+                f"{forge_url}/sdapi/v1/txt2img",
+                json=payload,
+                headers=headers
+            )
+            
+            logging.info(f"Response status: {response.status_code}")
+            logging.info(f"Response text (first 200 chars): {response.text[:200]}...")
+            
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    logging.info(f"Response data keys: {list(data.keys())}")
+                    if "images" in data and len(data["images"]) > 0:
+                        # Return the first image (base64 encoded)
+                        return data["images"][0]
+                    else:
+                        logging.error("No images returned from image generation")
+                        logging.error(f"Full response: {data}")
+                        return None
+                except Exception as e:
+                    logging.exception(f"Error parsing JSON response: {e}")
+                    logging.error(f"Raw response: {response.text}")
+                    return None
+            else:
+                logging.error(f"Image generation failed: {response.status_code} - {response.text}")
+                return None
+                
+    except Exception as e:
+        logging.exception(f"Error generating image: {e}")
+        return None
+
+
+# Image generation command
+@discord_bot.tree.command(name="image", description="Generate an image from a prompt using local providers")
+async def image_command(interaction: discord.Interaction, prompt: str) -> None:
+    """Generate an image based on a text prompt"""
+    await interaction.response.defer(ephemeral=False)
+    
+    # Check if image generation is configured
+    provider_config = config.get("llm", {}).get("image_generator", {})
+    if not provider_config:
+        await interaction.followup.send("Image generation is not configured.", ephemeral=True)
+        return
+    
+    # Generate the image
+    image_data = await generate_image(prompt, provider_config)
+    
+    if image_data:
+        try:
+            # Handle base64 image data - remove the "data:image/png;base64," prefix if present
+            if "," in image_data:
+                _, image_data = image_data.split(",", 1)
+            
+            # Decode base64 image data
+            image_bytes = b64decode(image_data)
+            
+            # Create a Discord file object
+            file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
+            
+            # Send the image
+            embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
+            await interaction.followup.send(embed=embed, file=file)
+            
+        except Exception as e:
+            logging.exception(f"Error sending generated image: {e}")
+            await interaction.followup.send("Failed to send generated image.", ephemeral=True)
+    else:
+        await interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
 
 
 @discord_bot.tree.command(name="model", description="View or switch the current model")
@@ -100,7 +243,14 @@ async def on_ready() -> None:
     if client_id := config.get("client_id"):
         logging.info(f"\n\nBOT INVITE URL:\nhttps://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot\n")
 
-    await discord_bot.tree.sync()
+    # Sync commands when bot is ready
+    try:
+        synced = await discord_bot.tree.sync()
+        logging.info(f"Synced {len(synced)} command(s)")
+        for cmd in synced:
+            logging.info(f"  - {cmd.name}")
+    except Exception as e:
+        logging.error(f"Failed to sync commands: {e}")
 
 
 @discord_bot.event
@@ -109,7 +259,14 @@ async def on_message(new_msg: discord.Message) -> None:
 
     is_dm = new_msg.channel.type == discord.ChannelType.private
 
+    # Skip if it's a bot message or not mentioning the bot (in non-DMs)
     if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
+        return
+
+    # Check if this is actually the image command being used incorrectly
+    if new_msg.content.strip().startswith('/image'):
+        # This means someone used @bot /image instead of just /image
+        # We should ignore this and let the proper command handle it
         return
 
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
@@ -119,7 +276,22 @@ async def on_message(new_msg: discord.Message) -> None:
 
     allow_dms = config.get("allow_dms", True)
 
-    permissions = config["permissions"]
+    # Fix: Safely access permissions with fallback
+    permissions = config.get("permissions", {
+        "users": {
+            "admin_ids": config.get("admin_user_ids", []),
+            "allowed_ids": [],
+            "blocked_ids": []
+        },
+        "roles": {
+            "allowed_ids": [],
+            "blocked_ids": []
+        },
+        "channels": {
+            "allowed_ids": config.get("allowed_channel_ids", []),
+            "blocked_ids": []
+        }
+    })
 
     user_is_admin = new_msg.author.id in permissions["users"]["admin_ids"]
 
@@ -138,16 +310,37 @@ async def on_message(new_msg: discord.Message) -> None:
     if is_bad_user or is_bad_channel:
         return
 
+    # Fix: Use llm.providers instead of config["providers"]
     provider_slash_model = curr_model
     provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
 
-    provider_config = config["providers"][provider]
+    # Fix: Access providers from llm section correctly
+    llm_config = config.get("llm", {})
+    provider_config = llm_config.get("providers", {}).get(provider, {})
+
+    if not provider_config:
+        logging.error(f"Provider configuration not found for: {provider}")
+        # Try to get the first available provider if none found
+        providers = llm_config.get("providers", {})
+        if providers:
+            provider = list(providers.keys())[0]
+            provider_config = providers[provider]
+            logging.info(f"Using fallback provider: {provider}")
+        else:
+            logging.error("No providers configured at all!")
+            return
 
     base_url = provider_config["base_url"]
     api_key = provider_config.get("api_key", "sk-no-key-required")
     openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
-    model_parameters = config["models"].get(provider_slash_model, None)
+    # Fix: Handle models properly - use the llm.model value if needed
+    model_parameters = None
+    if "models" in config:
+        model_parameters = config["models"].get(provider_slash_model, None)
+    else:
+        # Create a fallback model parameters structure
+        model_parameters = {}
 
     extra_headers = provider_config.get("extra_headers")
     extra_query = provider_config.get("extra_query")
