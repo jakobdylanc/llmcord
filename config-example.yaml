@@ -21,7 +21,8 @@ llm:
      #base_url: http://localhost-orIP:YourPortNumber/v1
      
   # --- 画像生成設定 (Stable Diffusion WebUI Forge) ---
-  image_generator:
+  image_generators:
+   forge_1:
     forge_url: "http://localhost-orIP:YourPortNumber/sdui(sdui-ForKoboldcpp)"
     default_model: "YourModelName"
     default_size: "768x768"
@@ -38,6 +39,23 @@ llm:
       cfg_scale: 7.0
       sampler_name: "DPM++ 2M Karras"
       restore_faces: false
+  #forge_2:
+  #  forge_url: "http://localhost-orIP:YourPortNumber/sdui(sdui-ForKoboldcpp)"
+  #  default_model: "YourModelName"
+  #  default_size: "768x768"
+  #  min_width: 256
+  #  min_height: 256
+  #  max_width: 2048
+  #  max_height: 2048
+  #  timeout: 720.0
+  #  show_progress: true
+  #  progress_update_interval: 5.0
+  #  default_params:
+  #    negative_prompt: "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry"
+  #    steps: 40
+  #    cfg_scale: 7.0
+  #    sampler_name: "DPM++ 2M Karras"
+  #    restore_faces: false
 
   # --- パラメータ設定 ---
   extra_api_parameters:
