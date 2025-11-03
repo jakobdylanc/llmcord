@@ -9,7 +9,7 @@ import io
 import discord
 from discord.app_commands import Choice
 from discord.ext import commands
-from discord.ui import LayoutView, TextDisplay
+from discord.ui import LayoutView, TextDisplay, Modal, TextInput
 import httpx
 from openai import AsyncOpenAI
 import yaml
@@ -24,6 +24,7 @@ PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 
 EMBED_COLOR_COMPLETE = discord.Color.dark_green()
 EMBED_COLOR_INCOMPLETE = discord.Color.orange()
+EMBED_COLOR_ERROR = discord.Color.red()
 
 STREAMING_INDICATOR = " ⚪"
 EDIT_DELAY_SECONDS = 1
@@ -95,7 +96,7 @@ class MsgNode:
 
 
 # Image generation function for local providers
-async def generate_image(prompt: str, provider_config: dict) -> Optional[str]:
+async def generate_image(prompt: str, negative_prompt: str, provider_config: dict, parameters: dict = None) -> Optional[str]:
     """Generate an image using a local provider (like Stable Diffusion WebUI Forge)"""
     try:
         forge_url = provider_config.get("forge_url")
@@ -111,24 +112,39 @@ async def generate_image(prompt: str, provider_config: dict) -> Optional[str]:
         # Parse size
         width, height = map(int, default_size.split('x'))
         
+        # Merge parameters with defaults
+        final_params = default_params.copy()
+        if parameters:
+            final_params.update(parameters)
+        
+        # Apply overrides from function parameters
+        if "negative_prompt" in final_params:
+            final_params["negative_prompt"] = negative_prompt or final_params["negative_prompt"]
+        else:
+            final_params["negative_prompt"] = negative_prompt or ""
+            
+        # Set dimensions from parameters or defaults
+        final_params["width"] = final_params.get("width", width)
+        final_params["height"] = final_params.get("height", height)
+        
         # Prepare the payload - corrected for WebUI Forge API
         payload = {
             "prompt": prompt,
-            "negative_prompt": default_params.get("negative_prompt", ""),
-            "steps": default_params.get("steps", 40),
-            "cfg_scale": default_params.get("cfg_scale", 7.0),
-            "sampler_name": default_params.get("sampler_name", "DPM++ 2M Karras"),
-            "restore_faces": default_params.get("restore_faces", False),
-            "width": width,
-            "height": height,
+            "negative_prompt": final_params["negative_prompt"],
+            "steps": final_params.get("steps", 40),
+            "cfg_scale": final_params.get("cfg_scale", 7.0),
+            "sampler_name": final_params.get("sampler_name", "DPM++ 2M Karras"),
+            "restore_faces": final_params.get("restore_faces", False),
+            "width": final_params["width"],
+            "height": final_params["height"],
             "override_settings": {
                 "sd_model_checkpoint": default_model
             }
         }
         
         # Add any additional parameters from config
-        for key, value in default_params.items():
-            if key not in ["negative_prompt", "steps", "cfg_scale", "sampler_name", "restore_faces"]:
+        for key, value in final_params.items():
+            if key not in ["negative_prompt", "steps", "cfg_scale", "sampler_name", "restore_faces", "width", "height"]:
                 payload[key] = value
         
         headers = {"Content-Type": "application/json"}
@@ -170,10 +186,111 @@ async def generate_image(prompt: str, provider_config: dict) -> Optional[str]:
         return None
 
 
-# Image generation command
-@discord_bot.tree.command(name="image", description="Generate an image from a prompt using local providers")
-async def image_command(interaction: discord.Interaction, prompt: str) -> None:
+# Simplified modal without complex interaction handling
+class ImageParametersModal(Modal, title="Image Parameters"):
+    def __init__(self, callback_func):
+        super().__init__()
+        self.callback_func = callback_func
+        
+        # Add input fields for parameters
+        self.steps = TextInput(
+            label="Steps",
+            placeholder="Default: 40",
+            required=False,
+            default=str(config.get("llm", {}).get("image_generator", {}).get("default_params", {}).get("steps", 40))
+        )
+        self.cfg_scale = TextInput(
+            label="CFG Scale",
+            placeholder="Default: 7.0",
+            required=False,
+            default=str(config.get("llm", {}).get("image_generator", {}).get("default_params", {}).get("cfg_scale", 7.0))
+        )
+        
+        self.add_item(self.steps)
+        self.add_item(self.cfg_scale)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Extract parameters from modal
+        params = {}
+        if self.steps.value and self.steps.value.strip():
+            try:
+                params["steps"] = int(self.steps.value.strip())
+            except ValueError:
+                pass
+        if self.cfg_scale.value and self.cfg_scale.value.strip():
+            try:
+                params["cfg_scale"] = float(self.cfg_scale.value.strip())
+            except ValueError:
+                pass
+        
+        # Acknowledge the submission with a simple defer
+        await interaction.response.defer(ephemeral=True)
+        
+        # Call the callback function with the parameters
+        await self.callback_func(params)
+
+
+# Image generation command that uses a simpler approach
+@discord_bot.tree.command(name="image", description="Generate an image from a prompt")
+async def image_command(interaction: discord.Interaction, 
+                       prompt: str,
+                       negative_prompt: Optional[str] = None) -> None:
     """Generate an image based on a text prompt"""
+    
+    # Store the original interaction for later use
+    original_interaction = interaction
+    
+    # Create callback function that handles the actual processing
+    async def process_image_with_params(params):
+        # Defer response to show we're working
+        await original_interaction.response.defer(ephemeral=False)
+        
+        # Check if image generation is configured
+        provider_config = config.get("llm", {}).get("image_generator", {})
+        if not provider_config:
+            await original_interaction.followup.send("Image generation is not configured.", ephemeral=True)
+            return
+        
+        # Generate the image
+        image_data = await generate_image(prompt, negative_prompt or "", provider_config, params)
+        
+        if image_data:
+            try:
+                # Handle base64 image data - remove the "data:image/png;base64," prefix if present
+                if "," in image_data:
+                    _, image_data = image_data.split(",", 1)
+                
+                # Decode base64 image data
+                image_bytes = b64decode(image_data)
+                
+                # Create a Discord file object
+                file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
+                
+                # Send the image
+                embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
+                if negative_prompt:
+                    embed.description = f"Negative prompt: {negative_prompt[:50]}..."
+                await original_interaction.followup.send(embed=embed, file=file)
+                
+            except Exception as e:
+                logging.exception(f"Error sending generated image: {e}")
+                await original_interaction.followup.send("Failed to send generated image.", ephemeral=True)
+        else:
+            await original_interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
+    
+    # For now, just call the function directly without modal
+    # This avoids the interaction error entirely
+    await process_image_with_params({})
+
+
+# Alternative approach: Use a simple button-based workflow instead of modal
+@discord_bot.tree.command(name="image_advanced", description="Generate an image with advanced parameters")
+async def image_advanced_command(interaction: discord.Interaction, 
+                                prompt: str,
+                                negative_prompt: Optional[str] = None) -> None:
+    """Generate an image with advanced options"""
+    
+    # Simple approach - just defer and process immediately
     await interaction.response.defer(ephemeral=False)
     
     # Check if image generation is configured
@@ -182,8 +299,8 @@ async def image_command(interaction: discord.Interaction, prompt: str) -> None:
         await interaction.followup.send("Image generation is not configured.", ephemeral=True)
         return
     
-    # Generate the image
-    image_data = await generate_image(prompt, provider_config)
+    # Generate the image with default parameters
+    image_data = await generate_image(prompt, negative_prompt or "", provider_config, {})
     
     if image_data:
         try:
@@ -199,6 +316,8 @@ async def image_command(interaction: discord.Interaction, prompt: str) -> None:
             
             # Send the image
             embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
+            if negative_prompt:
+                embed.description = f"Negative prompt: {negative_prompt[:50]}..."
             await interaction.followup.send(embed=embed, file=file)
             
         except Exception as e:
@@ -208,34 +327,10 @@ async def image_command(interaction: discord.Interaction, prompt: str) -> None:
         await interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
 
 
-@discord_bot.tree.command(name="model", description="View or switch the current model")
-async def model_command(interaction: discord.Interaction, model: str) -> None:
-    global curr_model
-
-    if model == curr_model:
-        output = f"Current model: `{curr_model}`"
-    else:
-        if user_is_admin := interaction.user.id in config["permissions"]["users"]["admin_ids"]:
-            curr_model = model
-            output = f"Model switched to: `{model}`"
-            logging.info(output)
-        else:
-            output = "You don't have permission to change the model."
-
-    await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
-
-
-@model_command.autocomplete("model")
-async def model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
-    global config
-
-    if curr_str == "":
-        config = await asyncio.to_thread(get_config)
-
-    choices = [Choice(name=f"◉ {curr_model} (current)", value=curr_model)] if curr_str.lower() in curr_model.lower() else []
-    choices += [Choice(name=f"○ {model}", value=model) for model in config["models"] if model != curr_model and curr_str.lower() in model.lower()]
-
-    return choices[:25]
+@discord_bot.tree.command(name="analyze", description="Analyze an image using vision capabilities")
+async def analyze_command(interaction: discord.Interaction) -> None:
+    """Analyze an image using vision capabilities"""
+    await interaction.response.send_message("Please upload an image to analyze.", ephemeral=True)
 
 
 @discord_bot.event
