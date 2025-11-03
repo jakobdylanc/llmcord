@@ -69,6 +69,7 @@ if "permissions" not in config:
 # Track current provider and model - initialize properly at module level
 current_provider = None
 current_model = None
+current_image_provider = None
 
 msg_nodes = {}
 last_task_time = 0
@@ -341,6 +342,51 @@ async def provider_autocomplete(interaction: discord.Interaction, curr_str: str)
     return choices
 
 
+# New /image_providers command to switch between different image generation endpoints
+@discord_bot.tree.command(name="image_providers", description="Switch between different image generation providers")
+async def image_providers_command(interaction: discord.Interaction, provider: str) -> None:
+    """Switch to a different image generation provider"""
+    global current_image_provider
+    
+    # Get available image providers from config
+    image_generators = config.get("llm", {}).get("image_generators", {})
+    
+    if not image_generators:
+        await interaction.response.send_message("No image generators configured.", ephemeral=True)
+        return
+        
+    if provider not in image_generators:
+        available_providers = list(image_generators.keys())
+        await interaction.response.send_message(
+            f"Image provider '{provider}' not found. Available providers: {', '.join(available_providers)}", 
+            ephemeral=True
+        )
+        return
+    
+    # Set the new image provider
+    current_image_provider = provider
+    output = f"Switched to image provider: `{provider}`"
+        
+    logging.info(output)
+    await interaction.response.send_message(output, ephemeral=True)
+
+
+@image_providers_command.autocomplete("provider")
+async def image_provider_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
+    """Autocomplete for image provider names"""
+    image_generators = config.get("llm", {}).get("image_generators", {})
+    
+    if not image_generators:
+        return []
+        
+    # Filter providers based on search string
+    filtered_providers = [p for p in image_generators.keys() if curr_str.lower() in p.lower()]
+    
+    # Return up to 25 choices
+    choices = [Choice(name=p, value=p) for p in filtered_providers[:25]]
+    return choices
+
+
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
@@ -358,7 +404,7 @@ async def on_ready() -> None:
 
 @discord_bot.event
 async def on_message(new_msg: discord.Message) -> None:
-    global last_task_time, current_provider, current_model
+    global last_task_time, current_provider, current_model, current_image_provider
 
     is_dm = new_msg.channel.type == discord.ChannelType.private
 
