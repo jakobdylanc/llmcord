@@ -1,5 +1,5 @@
 <h1 align="center">
-  llmcord
+  llmcord with image generation - Work in progress.
 </h1>
 
 <h3 align="center"><i>
