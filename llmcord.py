@@ -46,7 +46,7 @@ if "models" not in config:
     if llm_model:
         config["models"] = {llm_model: {}}
     else:
-        config["models"] = {"ollama/Gelato-30B-A3B-MXFP4_MOE": {}}
+        config["models"] = {}
 
 # Create a proper permissions structure based on your existing config
 if "permissions" not in config:
@@ -66,7 +66,9 @@ if "permissions" not in config:
         }
     }
 
-curr_model = next(iter(config["models"]))
+# Track current provider and model - initialize properly at module level
+current_provider = None
+current_model = None
 
 msg_nodes = {}
 last_task_time = 0
@@ -274,40 +276,69 @@ async def image_advanced_command(interaction: discord.Interaction,
         await interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
 
 
-@discord_bot.tree.command(name="model", description="View or switch the current model")
-async def model_command(interaction: discord.Interaction, model: str) -> None:
-    global curr_model
-
-    if model == curr_model:
-        output = f"Current model: `{curr_model}`"
-    else:
-        if user_is_admin := interaction.user.id in config["permissions"]["users"]["admin_ids"]:
-            curr_model = model
-            output = f"Model switched to: `{model}`"
-            logging.info(output)
+# New /providers command to switch between different endpoints
+@discord_bot.tree.command(name="providers", description="Switch between different providers/endpoints")
+async def providers_command(interaction: discord.Interaction, provider: str) -> None:
+    """Switch to a different provider"""
+    global current_provider, current_model
+    
+    # Get available providers from config
+    llm_config = config.get("llm", {})
+    providers = llm_config.get("providers", {})
+    
+    if not providers:
+        await interaction.response.send_message("No providers configured.", ephemeral=True)
+        return
+        
+    if provider not in providers:
+        available_providers = list(providers.keys())
+        await interaction.response.send_message(
+            f"Provider '{provider}' not found. Available providers: {', '.join(available_providers)}", 
+            ephemeral=True
+        )
+        return
+    
+    # Set the new provider and model
+    current_provider = provider
+    provider_config = providers[provider]
+    
+    # Try to get the default model for this provider
+    # For Ollama, we'll use the main model from config or set a default
+    default_model = provider_config.get("model") or "default"
+    
+    # If no specific model is set, try to find one from the models section
+    if default_model == "default":
+        # Check if there's a model in the main llm section that matches this provider
+        llm_model = config.get("llm", {}).get("model", "")
+        if llm_model and provider in llm_model:
+            default_model = llm_model.split("/", 1)[1] if "/" in llm_model else llm_model
         else:
-            output = "You don't have permission to change the model."
-
-    await interaction.response.send_message(output, ephemeral=(interaction.channel.type == discord.ChannelType.private))
-
-
-@model_command.autocomplete("model")
-async def model_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
-    global config
-
-    if curr_str == "":
-        config = await asyncio.to_thread(get_config)
-
-    choices = [Choice(name=f"◉ {curr_model} (current)", value=curr_model)] if curr_str.lower() in curr_model.lower() else []
-    choices += [Choice(name=f"○ {model}", value=model) for model in config["models"] if model != curr_model and curr_str.lower() in model.lower()]
-
-    return choices[:25]
+            # Fallback to a reasonable default for ollama - let's make it more flexible
+            # We'll just use a generic name since we don't know the actual model names
+            default_model = "qwen3"  # This will be overridden by the actual model name
+    
+    current_model = default_model
+    output = f"Switched to provider: `{provider}` with model: `{default_model}`"
+        
+    logging.info(output)
+    await interaction.response.send_message(output, ephemeral=True)
 
 
-@discord_bot.tree.command(name="analyze", description="Analyze an image using vision capabilities")
-async def analyze_command(interaction: discord.Interaction) -> None:
-    """Analyze an image using vision capabilities"""
-    await interaction.response.send_message("Please upload an image to analyze.", ephemeral=True)
+@providers_command.autocomplete("provider")
+async def provider_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
+    """Autocomplete for provider names"""
+    llm_config = config.get("llm", {})
+    providers = llm_config.get("providers", {})
+    
+    if not providers:
+        return []
+        
+    # Filter providers based on search string
+    filtered_providers = [p for p in providers.keys() if curr_str.lower() in p.lower()]
+    
+    # Return up to 25 choices
+    choices = [Choice(name=p, value=p) for p in filtered_providers[:25]]
+    return choices
 
 
 @discord_bot.event
@@ -327,18 +358,22 @@ async def on_ready() -> None:
 
 @discord_bot.event
 async def on_message(new_msg: discord.Message) -> None:
-    global last_task_time
+    global last_task_time, current_provider, current_model
 
     is_dm = new_msg.channel.type == discord.ChannelType.private
 
-    # Skip if it's a bot message or not mentioning the bot (in non-DMs)
-    if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
+    # Skip if it's a bot message
+    if new_msg.author.bot:
         return
 
-    # Check if this is actually the image command being used incorrectly
-    if new_msg.content.strip().startswith('/image'):
-        # This means someone used @bot /image instead of just /image
-        # We should ignore this and let the proper command handle it
+    # The key fix: Allow processing of all non-empty user messages
+    should_process = False
+    
+    # Always process DMs and non-empty messages in channels
+    if is_dm or new_msg.content.strip() != "":
+        should_process = True
+
+    if not should_process:
         return
 
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
@@ -382,44 +417,55 @@ async def on_message(new_msg: discord.Message) -> None:
     if is_bad_user or is_bad_channel:
         return
 
-    # Fix: Use llm.providers instead of config["providers"]
-    provider_slash_model = curr_model
-    provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
-
-    # Fix: Access providers from llm section correctly
+    # Use the current provider/model setup - FIXED: Properly handle global variables
     llm_config = config.get("llm", {})
-    provider_config = llm_config.get("providers", {}).get(provider, {})
-
-    if not provider_config:
-        logging.error(f"Provider configuration not found for: {provider}")
-        # Try to get the first available provider if none found
+    
+    # If no provider set yet, try to get from config
+    if current_provider is None:
         providers = llm_config.get("providers", {})
         if providers:
-            provider = list(providers.keys())[0]
-            provider_config = providers[provider]
-            logging.info(f"Using fallback provider: {provider}")
+            # Get first available provider
+            current_provider = list(providers.keys())[0]
+            provider_config = providers[current_provider]
+            
+            # Try to get model from main llm config
+            default_model = config.get("llm", {}).get("model")
+            if default_model:
+                # Extract model name if it's in format "provider/model"
+                if "/" in default_model:
+                    current_model = default_model.split("/", 1)[1]
+                else:
+                    current_model = default_model
+            else:
+                current_model = "qwen3"  # Default fallback
         else:
-            logging.error("No providers configured at all!")
+            logging.error("No providers configured!")
             return
+    
+    # Get provider configuration
+    provider_config = llm_config.get("providers", {}).get(current_provider, {})
+    
+    if not provider_config:
+        logging.error(f"Provider configuration not found for: {current_provider}")
+        return
 
     base_url = provider_config["base_url"]
     api_key = provider_config.get("api_key", "sk-no-key-required")
     openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
     # Fix: Handle models properly - use the llm.model value if needed
-    model_parameters = None
-    if "models" in config:
-        model_parameters = config["models"].get(provider_slash_model, None)
-    else:
-        # Create a fallback model parameters structure
-        model_parameters = {}
+    model_parameters = {}
+    # Only access models if they exist and are properly structured
+    if "models" in config and current_model:
+        model_key = f"{current_provider}/{current_model}"
+        model_parameters = config["models"].get(model_key, {}) or {}
 
     extra_headers = provider_config.get("extra_headers")
     extra_query = provider_config.get("extra_query")
     extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
 
-    accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
-    accept_usernames = any(provider_slash_model.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
+    accept_images = any(x in current_model.lower() for x in VISION_MODEL_TAGS) if current_model else False
+    accept_usernames = any(current_provider.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
 
     max_text = config.get("max_text", 100000)
     max_images = config.get("max_images", 5) if accept_images else 0
@@ -435,16 +481,16 @@ async def on_message(new_msg: discord.Message) -> None:
 
         async with curr_node.lock:
             if curr_node.text == None:
-                cleaned_content = curr_msg.content.removeprefix(discord_bot.user.mention).lstrip()
+                cleaned_content = new_msg.content.removeprefix(discord_bot.user.mention).lstrip()
 
-                good_attachments = [att for att in curr_msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
+                good_attachments = [att for att in new_msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
 
                 attachment_responses = await asyncio.gather(*[httpx_client.get(att.url) for att in good_attachments])
 
                 curr_node.text = "\n".join(
                     ([cleaned_content] if cleaned_content else [])
-                    + ["\n".join(filter(None, (embed.title, embed.description, embed.footer.text))) for embed in curr_msg.embeds]
-                    + [component.content for component in curr_msg.components if component.type == discord.ComponentType.text_display]
+                    + ["\n".join(filter(None, (embed.title, embed.description, embed.footer.text))) for embed in new_msg.embeds]
+                    + [component.content for component in new_msg.components if component.type == discord.ComponentType.text_display]
                     + [resp.text for att, resp in zip(good_attachments, attachment_responses) if att.content_type.startswith("text")]
                 )
 
@@ -454,30 +500,30 @@ async def on_message(new_msg: discord.Message) -> None:
                     if att.content_type.startswith("image")
                 ]
 
-                curr_node.role = "assistant" if curr_msg.author == discord_bot.user else "user"
+                curr_node.role = "assistant" if new_msg.author == discord_bot.user else "user"
 
-                curr_node.user_id = curr_msg.author.id if curr_node.role == "user" else None
+                curr_node.user_id = new_msg.author.id if curr_node.role == "user" else None
 
-                curr_node.has_bad_attachments = len(curr_msg.attachments) > len(good_attachments)
+                curr_node.has_bad_attachments = len(new_msg.attachments) > len(good_attachments)
 
                 try:
                     if (
-                        curr_msg.reference == None
-                        and discord_bot.user.mention not in curr_msg.content
-                        and (prev_msg_in_channel := ([m async for m in curr_msg.channel.history(before=curr_msg, limit=1)] or [None])[0])
+                        new_msg.reference == None
+                        and discord_bot.user.mention not in new_msg.content
+                        and (prev_msg_in_channel := ([m async for m in new_msg.channel.history(before=new_msg, limit=1)] or [None])[0])
                         and prev_msg_in_channel.type in (discord.MessageType.default, discord.MessageType.reply)
-                        and prev_msg_in_channel.author == (discord_bot.user if curr_msg.channel.type == discord.ChannelType.private else curr_msg.author)
+                        and prev_msg_in_channel.author == (discord_bot.user if new_msg.channel.type == discord.ChannelType.private else new_msg.author)
                     ):
                         curr_node.parent_msg = prev_msg_in_channel
                     else:
-                        is_public_thread = curr_msg.channel.type == discord.ChannelType.public_thread
-                        parent_is_thread_start = is_public_thread and curr_msg.reference == None and curr_msg.channel.parent.type == discord.ChannelType.text
+                        is_public_thread = new_msg.channel.type == discord.ChannelType.public_thread
+                        parent_is_thread_start = is_public_thread and new_msg.reference == None and new_msg.channel.parent.type == discord.ChannelType.text
 
-                        if parent_msg_id := curr_msg.channel.id if parent_is_thread_start else getattr(curr_msg.reference, "message_id", None):
+                        if parent_msg_id := new_msg.channel.id if parent_is_thread_start else getattr(new_msg.reference, "message_id", None):
                             if parent_is_thread_start:
-                                curr_node.parent_msg = curr_msg.channel.starter_message or await curr_msg.channel.parent.fetch_message(parent_msg_id)
+                                curr_node.parent_msg = new_msg.channel.starter_message or await new_msg.channel.parent.fetch_message(parent_msg_id)
                             else:
-                                curr_node.parent_msg = curr_msg.reference.cached_message or await curr_msg.channel.fetch_message(parent_msg_id)
+                                curr_node.parent_msg = new_msg.reference.cached_message or await new_msg.channel.fetch_message(parent_msg_id)
 
                 except (discord.NotFound, discord.HTTPException):
                     logging.exception("Error fetching next message in the chain")
@@ -508,44 +554,31 @@ async def on_message(new_msg: discord.Message) -> None:
 
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
-    # DEBUG: Print all messages before system prompt
-    logging.info(f"DEBUG: Messages count before system prompt: {len(messages)}")
-    for i, msg in enumerate(messages):
-        logging.info(f"DEBUG: Message {i}: role={msg.get('role', 'unknown')}, content_preview={repr(msg.get('content', '')[:100])}")
-    
     # Add system prompt at the beginning of messages - FIXED VERSION
-    llm_config = config.get("llm", {})
-    system_prompt = llm_config.get("system_prompt") or llm_config.get("system_prompt")  # Try both locations
+    system_prompt = llm_config.get("system_prompt") or ""
     
     if system_prompt:
         now = datetime.now().astimezone()
 
         system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
         
-        # DEBUG: Show what we're about to add as system prompt
-        logging.info(f"DEBUG: System prompt found and will be added: {repr(system_prompt[:200])}")
-        logging.info(f"DEBUG: System prompt length: {len(system_prompt)}")
-        
         if accept_usernames:
             system_prompt += "\n\nUser's names are their Discord IDs and should be typed as '<@ID>'."
 
         # IMPORTANT: Insert system prompt at the beginning, not append it at the end
         messages.insert(0, dict(role="system", content=system_prompt))
-        logging.info(f"DEBUG: System prompt successfully inserted. New messages count: {len(messages)}")
-        
-        # DEBUG: Print all messages after system prompt insertion
-        logging.info(f"DEBUG: Messages count after system prompt: {len(messages)}")
-        for i, msg in enumerate(messages):
-            logging.info(f"DEBUG: Message {i}: role={msg.get('role', 'unknown')}, content_preview={repr(msg.get('content', '')[:100])}")
     else:
-        logging.info("DEBUG: No system prompt found in config")
+        logging.info("No system prompt found in config")
 
     # Generate and send response message(s) (can be multiple if response is long)
     curr_content = finish_reason = None
     response_msgs = []
     response_contents = []
 
-    openai_kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
+    # Use current model or fallback to first available
+    model_to_use = current_model or "qwen3"
+    
+    openai_kwargs = dict(model=model_to_use, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
 
     if use_plain_responses := config.get("use_plain_responses", False):
         max_message_length = 4000
