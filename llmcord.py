@@ -369,9 +369,13 @@ async def on_message(new_msg: discord.Message) -> None:
     # The key fix: Allow processing of all non-empty user messages
     should_process = False
     
-    # Always process DMs and non-empty messages in channels
-    if is_dm or new_msg.content.strip() != "":
-        should_process = True
+    # Only process if:
+    #   - It's a direct message (DM), OR
+    #   - The bot is mentioned in the message
+    should_process = is_dm or discord_bot.user.mention in new_msg.content
+
+    if not should_process:
+        return
 
     if not should_process:
         return
