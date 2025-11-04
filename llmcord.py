@@ -19,7 +19,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s: %(message)s",
 )
 
-VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
+VISION_MODEL_TAGS = ("", "qwen3", "claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl", "ollama")
 PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 
 EMBED_COLOR_COMPLETE = discord.Color.dark_green()
@@ -503,7 +503,7 @@ async def on_message(new_msg: discord.Message) -> None:
                     for att, resp in zip(good_attachments, attachment_responses)
                     if att.content_type.startswith("image")
                 ]
-
+                
                 curr_node.role = "assistant" if new_msg.author == discord_bot.user else "user"
 
                 curr_node.user_id = new_msg.author.id if curr_node.role == "user" else None
