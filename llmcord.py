@@ -69,7 +69,6 @@ if "permissions" not in config:
 # Track current provider and model - initialize properly at module level
 current_provider = None
 current_model = None
-current_image_provider = None
 
 msg_nodes = {}
 last_task_time = 0
@@ -342,61 +341,6 @@ async def provider_autocomplete(interaction: discord.Interaction, curr_str: str)
     return choices
 
 
-# New /image_providers command to switch between different image generation endpoints
-@discord_bot.tree.command(name="image_providers", description="Switch between different image generation providers")
-async def image_providers_command(interaction: discord.Interaction, provider: str) -> None:
-    """Switch to a different image generation provider"""
-    global current_image_provider
-    
-    # Get available image providers from config
-    image_generators = config.get("llm", {}).get("image_generators", {})
-    
-    if not image_generators:
-        await interaction.response.send_message("No image generators configured.", ephemeral=True)
-        return
-        
-    if provider not in image_generators:
-        available_providers = list(image_generators.keys())
-        await interaction.response.send_message(
-            f"Image provider '{provider}' not found. Available providers: {', '.join(available_providers)}", 
-            ephemeral=True
-        )
-        return
-    
-    # Set the new image provider
-    current_image_provider = provider
-    output = f"Switched to image provider: `{provider}`"
-        
-    logging.info(output)
-    await interaction.response.send_message(output, ephemeral=True)
-
-
-@image_providers_command.autocomplete("provider")
-async def image_provider_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
-    """Autocomplete for image provider names"""
-    image_generators = config.get("llm", {}).get("image_generators", {})
-    
-    if not image_generators:
-        return []
-        
-    # Filter providers based on search string
-    filtered_providers = [p for p in image_generators.keys() if curr_str.lower() in p.lower()]
-    
-    # Return up to 25 choices
-    choices = [Choice(name=p, value=p) for p in filtered_providers[:25]]
-    return choices
-
-
-# Vision command - analyze images with the bot
-@discord_bot.tree.command(name="analyze", description="Analyze an image with the bot (mention the bot in your message)")
-async def analyze_command(interaction: discord.Interaction, prompt: str) -> None:
-    """Analyze an image with a specific prompt"""
-    await interaction.response.defer(ephemeral=False)
-    
-    # This command is now deprecated since we handle vision via mentions
-    await interaction.followup.send("Use @bot mention with an image attachment and a question about it instead.", ephemeral=True)
-
-
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
@@ -414,7 +358,7 @@ async def on_ready() -> None:
 
 @discord_bot.event
 async def on_message(new_msg: discord.Message) -> None:
-    global last_task_time, current_provider, current_model, current_image_provider
+    global last_task_time, current_provider, current_model
 
     is_dm = new_msg.channel.type == discord.ChannelType.private
 
@@ -520,13 +464,11 @@ async def on_message(new_msg: discord.Message) -> None:
     extra_query = provider_config.get("extra_query")
     extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
 
-    # Check if current model supports vision by checking the model name directly
-    model_name_lower = (current_model or "").lower()
-    accept_images = any(tag in model_name_lower for tag in VISION_MODEL_TAGS) if current_model else False
+    accept_images = any(x in current_model.lower() for x in VISION_MODEL_TAGS) if current_model else False
     accept_usernames = any(current_provider.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
 
     max_text = config.get("max_text", 100000)
-    max_images = 5 if accept_images else 0
+    max_images = config.get("max_images", 5) if accept_images else 0
     max_messages = config.get("max_messages", 25)
 
     # Build message chain and set user warnings
@@ -587,10 +529,7 @@ async def on_message(new_msg: discord.Message) -> None:
                     logging.exception("Error fetching next message in the chain")
                     curr_node.fetch_parent_failed = True
 
-            # Check if we have images to process
-            has_images = bool(curr_node.images[:max_images])
-            
-            if has_images:
+            if curr_node.images[:max_images]:
                 content = ([dict(type="text", text=curr_node.text[:max_text])] if curr_node.text[:max_text] else []) + curr_node.images[:max_images]
             else:
                 content = curr_node.text[:max_text]
@@ -604,79 +543,14 @@ async def on_message(new_msg: discord.Message) -> None:
 
             if len(curr_node.text) > max_text:
                 user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
-            
-            # Only add image warnings when there are actual images to process
-            if len(curr_node.images) > 0:
-                if len(curr_node.images) > max_images:
-                    user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message")
-                elif not accept_images:
-                    user_warnings.add("⚠️ Can't see images")
-            elif curr_node.has_bad_attachments:
+            if len(curr_node.images) > max_images:
+                user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message" if max_images > 0 else "⚠️ Can't see images")
+            if curr_node.has_bad_attachments:
                 user_warnings.add("⚠️ Unsupported attachments")
             if curr_node.fetch_parent_failed or (curr_node.parent_msg != None and len(messages) == max_messages):
                 user_warnings.add(f"⚠️ Only using last {len(messages)} message{'' if len(messages) == 1 else 's'}")
 
             curr_msg = curr_node.parent_msg
-
-    # Check if this message is a vision request (mentions bot with an image)
-    has_image_attachments = any(att.content_type and att.content_type.startswith("image") for att in new_msg.attachments)
-    is_vision_request = (
-        discord_bot.user.mention in new_msg.content and 
-        has_image_attachments
-    )
-
-    # If it's a vision request, we'll process it differently
-    if is_vision_request:
-        # Extract the question from the message after mentioning the bot
-        question = new_msg.content.removeprefix(discord_bot.user.mention).strip()
-        
-        # If no question provided, use a default one
-        if not question:
-            question = "What is in this image?"
-            
-        # Add the question as a text part to the content
-        if messages and messages[-1]["role"] == "user":
-            # Modify the last user message to include the question
-            if isinstance(messages[-1]["content"], list):
-                messages[-1]["content"].append({"type": "text", "text": question})
-            else:
-                messages[-1]["content"] = [{"type": "text", "text": question}]
-        else:
-            # Create a new user message with the question
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": question}
-                ]
-            })
-            
-        # Ensure we have images in the message
-        if not any(isinstance(c, dict) and c.get("type") == "image_url" for msg in messages for c in msg.get("content", [])):
-            # If no images found in existing messages, add the ones from this message
-            image_content = []
-            for att in new_msg.attachments:
-                if att.content_type and att.content_type.startswith("image"):
-                    try:
-                        response = await httpx_client.get(att.url)
-                        image_content.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{att.content_type};base64,{b64encode(response.content).decode('utf-8')}"
-                            }
-                        })
-                    except Exception as e:
-                        logging.exception(f"Error fetching image: {e}")
-                        continue
-            
-            if image_content:
-                # Add to the last user message or create a new one
-                if messages and messages[-1]["role"] == "user":
-                    messages[-1]["content"] = image_content + ([{"type": "text", "text": question}] if question else [])
-                else:
-                    messages.append({
-                        "role": "user",
-                        "content": image_content + ([{"type": "text", "text": question}] if question else [])
-                    })
 
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
