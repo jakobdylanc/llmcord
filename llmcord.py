@@ -520,11 +520,13 @@ async def on_message(new_msg: discord.Message) -> None:
     extra_query = provider_config.get("extra_query")
     extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
 
-    accept_images = any(x in current_model.lower() for x in VISION_MODEL_TAGS) if current_model else False
+    # Check if current model supports vision by checking the model name directly
+    model_name_lower = (current_model or "").lower()
+    accept_images = any(tag in model_name_lower for tag in VISION_MODEL_TAGS) if current_model else False
     accept_usernames = any(current_provider.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
 
     max_text = config.get("max_text", 100000)
-    max_images = config.get("max_images", 5) if accept_images else 0
+    max_images = 5 if accept_images else 0
     max_messages = config.get("max_messages", 25)
 
     # Build message chain and set user warnings
@@ -585,7 +587,10 @@ async def on_message(new_msg: discord.Message) -> None:
                     logging.exception("Error fetching next message in the chain")
                     curr_node.fetch_parent_failed = True
 
-            if curr_node.images[:max_images]:
+            # Check if we have images to process
+            has_images = bool(curr_node.images[:max_images])
+            
+            if has_images:
                 content = ([dict(type="text", text=curr_node.text[:max_text])] if curr_node.text[:max_text] else []) + curr_node.images[:max_images]
             else:
                 content = curr_node.text[:max_text]
@@ -599,9 +604,14 @@ async def on_message(new_msg: discord.Message) -> None:
 
             if len(curr_node.text) > max_text:
                 user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
-            if len(curr_node.images) > max_images:
-                user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message" if max_images > 0 else "⚠️ Can't see images")
-            if curr_node.has_bad_attachments:
+            
+            # Only add image warnings when there are actual images to process
+            if len(curr_node.images) > 0:
+                if len(curr_node.images) > max_images:
+                    user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message")
+                elif not accept_images:
+                    user_warnings.add("⚠️ Can't see images")
+            elif curr_node.has_bad_attachments:
                 user_warnings.add("⚠️ Unsupported attachments")
             if curr_node.fetch_parent_failed or (curr_node.parent_msg != None and len(messages) == max_messages):
                 user_warnings.add(f"⚠️ Only using last {len(messages)} message{'' if len(messages) == 1 else 's'}")
@@ -609,9 +619,10 @@ async def on_message(new_msg: discord.Message) -> None:
             curr_msg = curr_node.parent_msg
 
     # Check if this message is a vision request (mentions bot with an image)
+    has_image_attachments = any(att.content_type and att.content_type.startswith("image") for att in new_msg.attachments)
     is_vision_request = (
         discord_bot.user.mention in new_msg.content and 
-        any(att.content_type and att.content_type.startswith("image") for att in new_msg.attachments)
+        has_image_attachments
     )
 
     # If it's a vision request, we'll process it differently
