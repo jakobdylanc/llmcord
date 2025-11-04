@@ -387,6 +387,16 @@ async def image_provider_autocomplete(interaction: discord.Interaction, curr_str
     return choices
 
 
+# Vision command - analyze images with the bot
+@discord_bot.tree.command(name="analyze", description="Analyze an image with the bot (mention the bot in your message)")
+async def analyze_command(interaction: discord.Interaction, prompt: str) -> None:
+    """Analyze an image with a specific prompt"""
+    await interaction.response.defer(ephemeral=False)
+    
+    # This command is now deprecated since we handle vision via mentions
+    await interaction.followup.send("Use @bot mention with an image attachment and a question about it instead.", ephemeral=True)
+
+
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
@@ -597,6 +607,65 @@ async def on_message(new_msg: discord.Message) -> None:
                 user_warnings.add(f"⚠️ Only using last {len(messages)} message{'' if len(messages) == 1 else 's'}")
 
             curr_msg = curr_node.parent_msg
+
+    # Check if this message is a vision request (mentions bot with an image)
+    is_vision_request = (
+        discord_bot.user.mention in new_msg.content and 
+        any(att.content_type and att.content_type.startswith("image") for att in new_msg.attachments)
+    )
+
+    # If it's a vision request, we'll process it differently
+    if is_vision_request:
+        # Extract the question from the message after mentioning the bot
+        question = new_msg.content.removeprefix(discord_bot.user.mention).strip()
+        
+        # If no question provided, use a default one
+        if not question:
+            question = "What is in this image?"
+            
+        # Add the question as a text part to the content
+        if messages and messages[-1]["role"] == "user":
+            # Modify the last user message to include the question
+            if isinstance(messages[-1]["content"], list):
+                messages[-1]["content"].append({"type": "text", "text": question})
+            else:
+                messages[-1]["content"] = [{"type": "text", "text": question}]
+        else:
+            # Create a new user message with the question
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question}
+                ]
+            })
+            
+        # Ensure we have images in the message
+        if not any(isinstance(c, dict) and c.get("type") == "image_url" for msg in messages for c in msg.get("content", [])):
+            # If no images found in existing messages, add the ones from this message
+            image_content = []
+            for att in new_msg.attachments:
+                if att.content_type and att.content_type.startswith("image"):
+                    try:
+                        response = await httpx_client.get(att.url)
+                        image_content.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{att.content_type};base64,{b64encode(response.content).decode('utf-8')}"
+                            }
+                        })
+                    except Exception as e:
+                        logging.exception(f"Error fetching image: {e}")
+                        continue
+            
+            if image_content:
+                # Add to the last user message or create a new one
+                if messages and messages[-1]["role"] == "user":
+                    messages[-1]["content"] = image_content + ([{"type": "text", "text": question}] if question else [])
+                else:
+                    messages.append({
+                        "role": "user",
+                        "content": image_content + ([{"type": "text", "text": question}] if question else [])
+                    })
 
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
