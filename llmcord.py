@@ -5,6 +5,7 @@ from datetime import datetime
 import logging
 from typing import Any, Literal, Optional
 import io
+from collections import deque
 
 import discord
 from discord.app_commands import Choice
@@ -25,6 +26,7 @@ PROVIDERS_SUPPORTING_USERNAMES = ("openai", "x-ai")
 EMBED_COLOR_COMPLETE = discord.Color.dark_green()
 EMBED_COLOR_INCOMPLETE = discord.Color.orange()
 EMBED_COLOR_ERROR = discord.Color.red()
+EMBED_COLOR_QUEUED = discord.Color.blue()
 
 STREAMING_INDICATOR = " ⚪"
 EDIT_DELAY_SECONDS = 1
@@ -95,6 +97,107 @@ class MsgNode:
     parent_msg: Optional[discord.Message] = None
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+# Queue system implementation
+class RequestQueue:
+    def __init__(self):
+        self.queue = deque()
+        self.processing = False
+        self.current_request = None
+    
+    async def add_request(self, request_func, interaction=None, message=None):
+        request_id = len(self.queue) + 1
+        queue_position = len(self.queue)
+        
+        # Create a placeholder message for queue status
+        status_message = None
+        if interaction:
+            await interaction.response.defer(ephemeral=False)
+            embed = discord.Embed(
+                title="Request Queued",
+                description=f"Your request is queued at position #{queue_position + 1}",
+                color=EMBED_COLOR_QUEUED
+            )
+            status_message = await interaction.followup.send(embed=embed, wait=True)
+        elif message:
+            embed = discord.Embed(
+                title="Request Queued",
+                description=f"Your request is queued at position #{queue_position + 1}",
+                color=EMBED_COLOR_QUEUED
+            )
+            status_message = await message.channel.send(embed=embed)
+        
+        request_data = {
+            'id': request_id,
+            'func': request_func,
+            'interaction': interaction,
+            'message': message,
+            'status_message': status_message,
+            'timestamp': datetime.now()
+        }
+        
+        self.queue.append(request_data)
+        logging.info(f"Added request #{request_id} to queue (position: {queue_position})")
+        
+        # Start processing if not already running
+        if not self.processing:
+            asyncio.create_task(self._process_queue())
+    
+    async def _process_queue(self):
+        self.processing = True
+        logging.info("Starting queue processing")
+        
+        while self.queue:
+            request_data = self.queue.popleft()
+            
+            # Update status for remaining requests in queue
+            await self._update_queue_positions()
+            
+            # Process current request
+            try:
+                logging.info(f"Processing request #{request_data['id']}")
+                if request_data['status_message']:
+                    embed = discord.Embed(
+                        title="Processing Request",
+                        description="Your request is now being processed...",
+                        color=EMBED_COLOR_INCOMPLETE
+                    )
+                    await request_data['status_message'].edit(embed=embed)
+                
+                await request_data['func'](request_data)
+                
+            except Exception as e:
+                logging.exception(f"Error processing request #{request_data['id']}: {e}")
+                if request_data['status_message']:
+                    embed = discord.Embed(
+                        title="Error Processing Request",
+                        description=f"An error occurred: {str(e)}",
+                        color=EMBED_COLOR_ERROR
+                    )
+                    await request_data['status_message'].edit(embed=embed)
+            finally:
+                self.current_request = None
+        
+        self.processing = False
+        logging.info("Queue processing completed")
+    
+    async def _update_queue_positions(self):
+        for i, request_data in enumerate(self.queue):
+            if request_data['status_message']:
+                try:
+                    embed = discord.Embed(
+                        title="Request Queued",
+                        description=f"Your request is queued at position #{i + 1}",
+                        color=EMBED_COLOR_QUEUED
+                    )
+                    await request_data['status_message'].edit(embed=embed)
+                except Exception as e:
+                    logging.warning(f"Failed to update queue position for request: {e}")
+
+
+# Create global queue instance
+request_queue = RequestQueue()
 
 
 # Image generation function for local providers
@@ -188,95 +291,224 @@ async def generate_image(prompt: str, negative_prompt: str, provider_config: dic
         return None
 
 
-# Image generation command that uses a simpler approach
+# Image generation command that uses queue system
+async def _process_image_request(request_data):
+    """Process an image generation request"""
+    interaction = request_data['interaction']
+    prompt = request_data['prompt']
+    negative_prompt = request_data['negative_prompt']
+    
+    # Check if image generation is configured
+    provider_config = config.get("llm", {}).get("image_generator", {})
+    if not provider_config:
+        embed = discord.Embed(
+            title="Configuration Error",
+            description="Image generation is not configured.",
+            color=EMBED_COLOR_ERROR
+        )
+        await interaction.followup.send(embed=embed)
+        return
+    
+    # Generate the image with default parameters
+    image_data = await generate_image(prompt, negative_prompt or "", provider_config, {})
+    
+    if image_data:
+        try:
+            # Handle base64 image data - remove the "data:image/png;base64," prefix if present
+            if "," in image_data:
+                _, image_data = image_data.split(",", 1)
+            
+            # Decode base64 image data
+            image_bytes = b64decode(image_data)
+            
+            # Create a Discord file object
+            file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
+            
+            # Send the image
+            embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
+            if negative_prompt:
+                embed.description = f"Negative prompt: {negative_prompt[:50]}..."
+            await interaction.followup.send(embed=embed, file=file)
+            
+        except Exception as e:
+            logging.exception(f"Error sending generated image: {e}")
+            embed = discord.Embed(
+                title="Error",
+                description="Failed to send generated image.",
+                color=EMBED_COLOR_ERROR
+            )
+            await interaction.followup.send(embed=embed)
+    else:
+        embed = discord.Embed(
+            title="Generation Failed",
+            description="Failed to generate image. Please check the logs for details.",
+            color=EMBED_COLOR_ERROR
+        )
+        await interaction.followup.send(embed=embed)
+
+
 @discord_bot.tree.command(name="image", description="Generate an image from a prompt")
 async def image_command(interaction: discord.Interaction, 
                        prompt: str,
                        negative_prompt: Optional[str] = None) -> None:
     """Generate an image based on a text prompt"""
     
-    # Defer response to show we're working
-    await interaction.response.defer(ephemeral=False)
+    # Add request to queue
+    request_func = lambda data: _process_image_request({
+        **data,
+        'prompt': prompt,
+        'negative_prompt': negative_prompt
+    })
     
-    # Check if image generation is configured
-    provider_config = config.get("llm", {}).get("image_generator", {})
-    if not provider_config:
-        await interaction.followup.send("Image generation is not configured.", ephemeral=True)
-        return
-    
-    # Generate the image with default parameters
-    image_data = await generate_image(prompt, negative_prompt or "", provider_config, {})
-    
-    if image_data:
-        try:
-            # Handle base64 image data - remove the "data:image/png;base64," prefix if present
-            if "," in image_data:
-                _, image_data = image_data.split(",", 1)
-            
-            # Decode base64 image data
-            image_bytes = b64decode(image_data)
-            
-            # Create a Discord file object
-            file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
-            
-            # Send the image
-            embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
-            if negative_prompt:
-                embed.description = f"Negative prompt: {negative_prompt[:50]}..."
-            await interaction.followup.send(embed=embed, file=file)
-            
-        except Exception as e:
-            logging.exception(f"Error sending generated image: {e}")
-            await interaction.followup.send("Failed to send generated image.", ephemeral=True)
-    else:
-        await interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
+    await request_queue.add_request(request_func, interaction=interaction)
 
 
-# Alternative approach: Use a simple button-based workflow instead of modal
+# Advanced image generation command
 @discord_bot.tree.command(name="image_advanced", description="Generate an image with advanced parameters")
 async def image_advanced_command(interaction: discord.Interaction, 
                                 prompt: str,
                                 negative_prompt: Optional[str] = None) -> None:
     """Generate an image with advanced options"""
     
-    # Simple approach - just defer and process immediately
-    await interaction.response.defer(ephemeral=False)
+    # For now, we'll use the same processing as regular image command
+    # You can extend this later with additional parameters
     
-    # Check if image generation is configured
-    provider_config = config.get("llm", {}).get("image_generator", {})
+    # Add request to queue
+    request_func = lambda data: _process_image_request({
+        **data,
+        'prompt': prompt,
+        'negative_prompt': negative_prompt
+    })
+    
+    await request_queue.add_request(request_func, interaction=interaction)
+
+
+# Text generation with queue system
+async def _process_text_request(request_data):
+    """Process a text generation request"""
+    message = request_data['message']
+    messages = request_data['messages']
+    user_warnings = request_data['user_warnings']
+    config = request_data['config']
+    current_provider = request_data['current_provider']
+    current_model = request_data['current_model']
+    
+    # Get provider configuration
+    llm_config = config.get("llm", {})
+    provider_config = llm_config.get("providers", {}).get(current_provider, {})
+    
     if not provider_config:
-        await interaction.followup.send("Image generation is not configured.", ephemeral=True)
+        logging.error(f"Provider configuration not found for: {current_provider}")
         return
+
+    base_url = provider_config["base_url"]
+    api_key = provider_config.get("api_key", "sk-no-key-required")
+    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+
+    # Fix: Handle models properly - use the llm.model value if needed
+    model_parameters = {}
+    # Only access models if they exist and are properly structured
+    if "models" in config and current_model:
+        model_key = f"{current_provider}/{current_model}"
+        model_parameters = config["models"].get(model_key, {}) or {}
+
+    extra_headers = provider_config.get("extra_headers")
+    extra_query = provider_config.get("extra_query")
+    extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
+
+    # Generate and send response message(s) (can be multiple if response is long)
+    curr_content = finish_reason = None
+    response_msgs = []
+    response_contents = []
+
+    # Use current model or fallback to first available
+    model_to_use = current_model or "qwen3"
     
-    # Generate the image with default parameters
-    image_data = await generate_image(prompt, negative_prompt or "", provider_config, {})
-    
-    if image_data:
-        try:
-            # Handle base64 image data - remove the "data:image/png;base64," prefix if present
-            if "," in image_data:
-                _, image_data = image_data.split(",", 1)
-            
-            # Decode base64 image data
-            image_bytes = b64decode(image_data)
-            
-            # Create a Discord file object
-            file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
-            
-            # Send the image
-            embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
-            if negative_prompt:
-                embed.description = f"Negative prompt: {negative_prompt[:50]}..."
-            await interaction.followup.send(embed=embed, file=file)
-            
-        except Exception as e:
-            logging.exception(f"Error sending generated image: {e}")
-            await interaction.followup.send("Failed to send generated image.", ephemeral=True)
+    openai_kwargs = dict(model=model_to_use, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
+
+    if use_plain_responses := config.get("use_plain_responses", False):
+        max_message_length = 4000
     else:
-        await interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
+        max_message_length = 4096 - len(STREAMING_INDICATOR)
+        embed = discord.Embed.from_dict(dict(fields=[dict(name=warning, value="", inline=False) for warning in sorted(user_warnings)]))
+
+    async def reply_helper(**reply_kwargs) -> None:
+        reply_target = message if not response_msgs else response_msgs[-1]
+        response_msg = await reply_target.reply(**reply_kwargs)
+        response_msgs.append(response_msg)
+
+        msg_nodes[response_msg.id] = MsgNode(parent_msg=message)
+        await msg_nodes[response_msg.id].lock.acquire()
+
+    try:
+        async with message.channel.typing():
+            async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
+                if finish_reason != None:
+                    break
+
+                if not (choice := chunk.choices[0] if chunk.choices else None):
+                    continue
+
+                finish_reason = choice.finish_reason
+
+                prev_content = curr_content or ""
+                curr_content = choice.delta.content or ""
+
+                new_content = prev_content if finish_reason == None else (prev_content + curr_content)
+
+                if response_contents == [] and new_content == "":
+                    continue
+
+                if start_next_msg := response_contents == [] or len(response_contents[-1] + new_content) > max_message_length:
+                    response_contents.append("")
+
+                response_contents[-1] += new_content
+
+                if not use_plain_responses:
+                    time_delta = datetime.now().timestamp() - last_task_time
+
+                    ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
+                    msg_split_incoming = finish_reason == None and len(response_contents[-1] + curr_content) > max_message_length
+                    is_final_edit = finish_reason != None or msg_split_incoming
+                    is_good_finish = finish_reason != None and finish_reason.lower() in ("stop", "end_turn")
+
+                    if start_next_msg or ready_to_edit or is_final_edit:
+                        embed.description = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
+                        embed.color = EMBED_COLOR_COMPLETE if msg_split_incoming or is_good_finish else EMBED_COLOR_INCOMPLETE
+
+                        if start_next_msg:
+                            await reply_helper(embed=embed, silent=True)
+                        else:
+                            await asyncio.sleep(EDIT_DELAY_SECONDS - time_delta)
+                            await response_msgs[-1].edit(embed=embed)
+
+                        last_task_time = datetime.now().timestamp()
+
+            if use_plain_responses:
+                for content in response_contents:
+                    await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
+
+    except Exception as e:
+        logging.exception(f"Error while generating response: {e}")
+        # Send error message to user
+        embed = discord.Embed(
+            title="Error Processing Request",
+            description=f"An error occurred while processing your request: {str(e)}",
+            color=EMBED_COLOR_ERROR
+        )
+        await message.channel.send(embed=embed)
+
+    for response_msg in response_msgs:
+        msg_nodes[response_msg.id].text = "".join(response_contents)
+        msg_nodes[response_msg.id].lock.release()
+
+    # Delete oldest MsgNodes (lowest message IDs) from the cache
+    if (num_nodes := len(msg_nodes)) > MAX_MESSAGE_NODES:
+        for msg_id in sorted(msg_nodes.keys())[: num_nodes - MAX_MESSAGE_NODES]:
+            async with msg_nodes.setdefault(msg_id, MsgNode()).lock:
+                msg_nodes.pop(msg_id, None)
 
 
-# New /providers command to switch between different endpoints
 @discord_bot.tree.command(name="providers", description="Switch between different providers/endpoints")
 async def providers_command(interaction: discord.Interaction, provider: str) -> None:
     """Switch to a different provider"""
@@ -321,7 +553,7 @@ async def providers_command(interaction: discord.Interaction, provider: str) -> 
     output = f"Switched to provider: `{provider}` with model: `{default_model}`"
         
     logging.info(output)
-    await interaction.response.send_message(output, ephemeral=True)
+    await interaction.response.send0_message(output, ephemeral=True)
 
 
 @providers_command.autocomplete("provider")
@@ -373,9 +605,6 @@ async def on_message(new_msg: discord.Message) -> None:
     #   - It's a direct message (DM), OR
     #   - The bot is mentioned in the message
     should_process = is_dm or discord_bot.user.mention in new_msg.content
-
-    if not should_process:
-        return
 
     if not should_process:
         return
@@ -446,28 +675,6 @@ async def on_message(new_msg: discord.Message) -> None:
             logging.error("No providers configured!")
             return
     
-    # Get provider configuration
-    provider_config = llm_config.get("providers", {}).get(current_provider, {})
-    
-    if not provider_config:
-        logging.error(f"Provider configuration not found for: {current_provider}")
-        return
-
-    base_url = provider_config["base_url"]
-    api_key = provider_config.get("api_key", "sk-no-key-required")
-    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
-
-    # Fix: Handle models properly - use the llm.model value if needed
-    model_parameters = {}
-    # Only access models if they exist and are properly structured
-    if "models" in config and current_model:
-        model_key = f"{current_provider}/{current_model}"
-        model_parameters = config["models"].get(model_key, {}) or {}
-
-    extra_headers = provider_config.get("extra_headers")
-    extra_query = provider_config.get("extra_query")
-    extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
-
     accept_images = any(x in current_model.lower() for x in VISION_MODEL_TAGS) if current_model else False
     accept_usernames = any(current_provider.lower().startswith(x) for x in PROVIDERS_SUPPORTING_USERNAMES)
 
@@ -574,90 +781,18 @@ async def on_message(new_msg: discord.Message) -> None:
     else:
         logging.info("No system prompt found in config")
 
-    # Generate and send response message(s) (can be multiple if response is long)
-    curr_content = finish_reason = None
-    response_msgs = []
-    response_contents = []
-
-    # Use current model or fallback to first available
-    model_to_use = current_model or "qwen3"
+    # Add text generation request to queue
+    request_func = lambda data: _process_text_request({
+        **data,
+        'message': new_msg,
+        'messages': messages,
+        'user_warnings': user_warnings,
+        'config': config,
+        'current_provider': current_provider,
+        'current_model': current_model
+    })
     
-    openai_kwargs = dict(model=model_to_use, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
-
-    if use_plain_responses := config.get("use_plain_responses", False):
-        max_message_length = 4000
-    else:
-        max_message_length = 4096 - len(STREAMING_INDICATOR)
-        embed = discord.Embed.from_dict(dict(fields=[dict(name=warning, value="", inline=False) for warning in sorted(user_warnings)]))
-
-    async def reply_helper(**reply_kwargs) -> None:
-        reply_target = new_msg if not response_msgs else response_msgs[-1]
-        response_msg = await reply_target.reply(**reply_kwargs)
-        response_msgs.append(response_msg)
-
-        msg_nodes[response_msg.id] = MsgNode(parent_msg=new_msg)
-        await msg_nodes[response_msg.id].lock.acquire()
-
-    try:
-        async with new_msg.channel.typing():
-            async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
-                if finish_reason != None:
-                    break
-
-                if not (choice := chunk.choices[0] if chunk.choices else None):
-                    continue
-
-                finish_reason = choice.finish_reason
-
-                prev_content = curr_content or ""
-                curr_content = choice.delta.content or ""
-
-                new_content = prev_content if finish_reason == None else (prev_content + curr_content)
-
-                if response_contents == [] and new_content == "":
-                    continue
-
-                if start_next_msg := response_contents == [] or len(response_contents[-1] + new_content) > max_message_length:
-                    response_contents.append("")
-
-                response_contents[-1] += new_content
-
-                if not use_plain_responses:
-                    time_delta = datetime.now().timestamp() - last_task_time
-
-                    ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
-                    msg_split_incoming = finish_reason == None and len(response_contents[-1] + curr_content) > max_message_length
-                    is_final_edit = finish_reason != None or msg_split_incoming
-                    is_good_finish = finish_reason != None and finish_reason.lower() in ("stop", "end_turn")
-
-                    if start_next_msg or ready_to_edit or is_final_edit:
-                        embed.description = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
-                        embed.color = EMBED_COLOR_COMPLETE if msg_split_incoming or is_good_finish else EMBED_COLOR_INCOMPLETE
-
-                        if start_next_msg:
-                            await reply_helper(embed=embed, silent=True)
-                        else:
-                            await asyncio.sleep(EDIT_DELAY_SECONDS - time_delta)
-                            await response_msgs[-1].edit(embed=embed)
-
-                        last_task_time = datetime.now().timestamp()
-
-            if use_plain_responses:
-                for content in response_contents:
-                    await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
-
-    except Exception as e:
-        logging.exception(f"Error while generating response: {e}")
-
-    for response_msg in response_msgs:
-        msg_nodes[response_msg.id].text = "".join(response_contents)
-        msg_nodes[response_msg.id].lock.release()
-
-    # Delete oldest MsgNodes (lowest message IDs) from the cache
-    if (num_nodes := len(msg_nodes)) > MAX_MESSAGE_NODES:
-        for msg_id in sorted(msg_nodes.keys())[: num_nodes - MAX_MESSAGE_NODES]:
-            async with msg_nodes.setdefault(msg_id, MsgNode()).lock:
-                msg_nodes.pop(msg_id, None)
+    await request_queue.add_request(request_func, message=new_msg)
 
 
 async def main() -> None:
