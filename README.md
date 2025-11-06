@@ -1,6 +1,47 @@
 <h1 align="center">
-  llmcord with image generation - Work in progress.
+  llmcord with image generation.
 </h1>
+
+<h4 align="center">
+Key Improvements Made:
+
+1. Image Provider Switching
+
+    Added /image_providers command to switch between different image generation endpoints
+    Created autocomplete functionality for image providers
+    Added current_image_provider global variable to track the active provider
+
+
+2. Image Queue System
+
+    Implemented an asynchronous queue (image_queue) for processing image generation requests
+    Added worker task (image_generation_worker) that processes queue items one by one
+    Added timeout handling (20 minutes per request)
+    Results are stored in image_results dictionary using request IDs
+
+
+3. Image Storage System
+
+    Created generated_images folder automatically if it doesn't exist
+    Images are saved as temporary files with UUID filenames
+    Files are automatically deleted after being sent to Discord
+    Added proper error handling for file operations
+
+
+4. Message Modification Instead of New Messages
+
+    The existing streaming response system already modifies messages instead of creating new ones
+    Added proper timing controls with EDIT_DELAY_SECONDS
+    Messages are edited in real-time during generation and finalized when complete
+
+
+5. Additional Features
+
+    Enhanced /image_advanced command with more parameters (steps, cfg_scale, dimensions)
+    Better error handling and logging throughout the image generation pipeline
+    Automatic cleanup of temporary files
+    Proper timeout handling for long-running image generations
+   </h4>
 
 <h3 align="center"><i>
   Talk to LLMs with your friends!
