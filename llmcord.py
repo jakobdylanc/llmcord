@@ -1,4 +1,4 @@
-# llmcord.py - v1.3.1
+# llmcord.py - v1.0.0 with image generation tested just locally
 from base64 import b64encode, b64decode
 from dataclasses import dataclass, field
 from datetime import datetime
