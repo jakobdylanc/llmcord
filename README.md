@@ -79,11 +79,12 @@ llmcord supports remote models from:
 - [Groq API](https://console.groq.com/docs/models)
 - [OpenRouter API](https://openrouter.ai/models)
 
+# should Work
 Or run local models with:
 - [Ollama](https://ollama.com)
 - [LM Studio](https://lmstudio.ai)
 - [vLLM](https://github.com/vllm-project/vllm)
-
+- [Koboldcpp](https://github.com/LostRuins/koboldcpp)
 ...Or use any other OpenAI compatible API server.
 
 ---
@@ -129,13 +130,3 @@ Or run local models with:
 - Only models from OpenAI API and xAI API are "user identity aware" because only they support the "name" parameter in the message object. Hopefully more providers support this in the future.
 
 - PRs are welcome :)
-
-## Star History
-
-<a href="https://star-history.com/#jakobdylanc/llmcord&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=jakobdylanc/llmcord&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=jakobdylanc/llmcord&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=jakobdylanc/llmcord&type=Date" />
-  </picture>
-</a>
