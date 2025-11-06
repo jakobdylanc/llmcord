@@ -1,4 +1,4 @@
-import asyncio
+# llmcord.py - v1.3.1
 from base64 import b64encode, b64decode
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -7,6 +7,7 @@ from typing import Any, Literal, Optional
 import io
 import os
 import uuid
+import asyncio
 from collections import deque
 
 import discord
@@ -488,6 +489,58 @@ async def image_providers_command(interaction: discord.Interaction, provider: st
     await interaction.response.send_message(output, ephemeral=True)
 
 
+# New /allow_dm command for admins to toggle DM functionality
+@discord_bot.tree.command(name="allow_dm", description="Toggle Direct Message functionality (Admin only)")
+async def allow_dm_command(interaction: discord.Interaction, enabled: bool) -> None:
+    """Toggle whether the bot accepts Direct Messages"""
+    # Check if user is admin
+    config = await asyncio.to_thread(get_config)
+    permissions = config.get("permissions", {
+        "users": {
+            "admin_ids": config.get("admin_user_ids", []),
+            "allowed_ids": [],
+            "blocked_ids": []
+        },
+        "roles": {
+            "allowed_ids": [],
+            "blocked_ids": []
+        },
+        "channels": {
+            "allowed_ids": config.get("allowed_channel_ids", []),
+            "blocked_ids": []
+        }
+    })
+    
+    user_is_admin = interaction.user.id in permissions["users"]["admin_ids"]
+    
+    if not user_is_admin:
+        await interaction.response.send_message("Only administrators can use this command.", ephemeral=True)
+        return
+    
+    # Update the config file
+    try:
+        # Read current config
+        with open("config.yaml", "r", encoding="utf-8") as f:
+            current_config = yaml.safe_load(f) or {}
+        
+        # Update allow_dms setting
+        current_config["allow_dms"] = enabled
+        
+        # Write back to file
+        with open("config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(current_config, f, default_flow_style=False, allow_unicode=True)
+        
+        status = "enabled" if enabled else "disabled"
+        message = f"Direct Messages have been {status}."
+        logging.info(message)
+        await interaction.response.send_message(message, ephemeral=True)
+        
+    except Exception as e:
+        error_msg = f"Failed to update DM settings: {e}"
+        logging.error(error_msg)
+        await interaction.response.send_message(error_msg, ephemeral=True)
+
+
 @providers_command.autocomplete("provider")
 async def provider_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
     """Autocomplete for provider names"""
@@ -567,9 +620,6 @@ async def on_message(new_msg: discord.Message) -> None:
     if not should_process:
         return
 
-    if not should_process:
-        return
-
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
     channel_ids = set(filter(None, (new_msg.channel.id, getattr(new_msg.channel, "parent_id", None), getattr(new_msg.channel, "category_id", None))))
 
@@ -607,6 +657,10 @@ async def on_message(new_msg: discord.Message) -> None:
     allow_all_channels = not allowed_channel_ids
     is_good_channel = user_is_admin or allow_dms if is_dm else allow_all_channels or any(id in allowed_channel_ids for id in channel_ids)
     is_bad_channel = not is_good_channel or any(id in blocked_channel_ids for id in channel_ids)
+
+    # NEW: Check if DMs are disabled when this is a DM message
+    if is_dm and not allow_dms:
+        return  # Silently ignore DMs if they're disabled
 
     if is_bad_user or is_bad_channel:
         return
