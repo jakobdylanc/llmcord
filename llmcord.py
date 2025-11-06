@@ -5,6 +5,9 @@ from datetime import datetime
 import logging
 from typing import Any, Literal, Optional
 import io
+import os
+import uuid
+from collections import deque
 
 import discord
 from discord.app_commands import Choice
@@ -31,6 +34,11 @@ EDIT_DELAY_SECONDS = 1
 
 MAX_MESSAGE_NODES = 500
 
+# Image generation queue and storage
+image_queue = asyncio.Queue()
+image_results = {}
+IMAGE_STORAGE_FOLDER = "generated_images"
+os.makedirs(IMAGE_STORAGE_FOLDER, exist_ok=True)
 
 def get_config(filename: str = "config.yaml") -> dict[str, Any]:
     with open(filename, encoding="utf-8") as file:
@@ -69,6 +77,7 @@ if "permissions" not in config:
 # Track current provider and model - initialize properly at module level
 current_provider = None
 current_model = None
+current_image_provider = "forge_1"  # Default image provider
 
 msg_nodes = {}
 last_task_time = 0
@@ -95,6 +104,57 @@ class MsgNode:
     parent_msg: Optional[discord.Message] = None
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+# Image generation worker task
+async def image_generation_worker():
+    """Process image generation requests from the queue"""
+    while True:
+        try:
+            request_id, prompt, negative_prompt, provider_config, parameters = await image_queue.get()
+            
+            logging.info(f"Processing image generation request {request_id}")
+            
+            try:
+                # Generate the image
+                image_data = await generate_image(prompt, negative_prompt, provider_config, parameters)
+                
+                if image_data:
+                    # Save image to file
+                    filename = f"{uuid.uuid4()}.png"
+                    filepath = os.path.join(IMAGE_STORAGE_FOLDER, filename)
+                    
+                    try:
+                        # Handle base64 image data - remove the "data:image/png;base64," prefix if present
+                        if "," in image_data:
+                            _, image_data = image_data.split(",", 1)
+                        
+                        # Decode base64 image data
+                        image_bytes = b64decode(image_data)
+                        
+                        # Save to file
+                        with open(filepath, "wb") as f:
+                            f.write(image_bytes)
+                        
+                        image_results[request_id] = {"status": "success", "filepath": filepath}
+                        logging.info(f"Image saved successfully: {filepath}")
+                    except Exception as e:
+                        logging.exception(f"Error saving generated image: {e}")
+                        image_results[request_id] = {"status": "error", "error": str(e)}
+                else:
+                    image_results[request_id] = {"status": "error", "error": "Failed to generate image"}
+                    
+            except Exception as e:
+                logging.exception(f"Error processing image generation: {e}")
+                image_results[request_id] = {"status": "error", "error": str(e)}
+            
+            finally:
+                image_queue.task_done()
+                
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logging.exception(f"Unexpected error in image worker: {e}")
 
 
 # Image generation function for local providers
@@ -188,7 +248,7 @@ async def generate_image(prompt: str, negative_prompt: str, provider_config: dic
         return None
 
 
-# Image generation command that uses a simpler approach
+# Image generation command that uses queue system
 @discord_bot.tree.command(name="image", description="Generate an image from a prompt")
 async def image_command(interaction: discord.Interaction, 
                        prompt: str,
@@ -199,81 +259,148 @@ async def image_command(interaction: discord.Interaction,
     await interaction.response.defer(ephemeral=False)
     
     # Check if image generation is configured
-    provider_config = config.get("llm", {}).get("image_generator", {})
-    if not provider_config:
+    llm_config = config.get("llm", {})
+    image_providers = llm_config.get("image_generator", {})
+    
+    if not image_providers:
         await interaction.followup.send("Image generation is not configured.", ephemeral=True)
         return
     
-    # Generate the image with default parameters
-    image_data = await generate_image(prompt, negative_prompt or "", provider_config, {})
+    # Get current image provider configuration
+    provider_config = image_providers.get(current_image_provider, {})
+    if not provider_config:
+        await interaction.followup.send(f"Image provider '{current_image_provider}' not found.", ephemeral=True)
+        return
     
-    if image_data:
-        try:
-            # Handle base64 image data - remove the "data:image/png;base64," prefix if present
-            if "," in image_data:
-                _, image_data = image_data.split(",", 1)
+    # Generate request ID and add to queue
+    request_id = str(uuid.uuid4())
+    await image_queue.put((request_id, prompt, negative_prompt or "", provider_config, {}))
+    
+    # Wait for result with timeout (20 minutes)
+    start_time = datetime.now()
+    timeout = 1200  # 20 minutes in seconds
+    
+    while (datetime.now() - start_time).seconds < timeout:
+        if request_id in image_results:
+            result = image_results.pop(request_id)
             
-            # Decode base64 image data
-            image_bytes = b64decode(image_data)
+            if result["status"] == "success":
+                try:
+                    # Send the image file
+                    filepath = result["filepath"]
+                    file = discord.File(filepath, filename=os.path.basename(filepath))
+                    
+                    # Create embed
+                    embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
+                    if negative_prompt:
+                        embed.description = f"Negative prompt: {negative_prompt[:50]}..."
+                    
+                    await interaction.followup.send(embed=embed, file=file)
+                    
+                    # Clean up file after sending
+                    try:
+                        os.remove(filepath)
+                    except Exception as e:
+                        logging.warning(f"Could not delete temporary image file {filepath}: {e}")
+                        
+                except Exception as e:
+                    logging.exception(f"Error sending generated image: {e}")
+                    await interaction.followup.send("Failed to send generated image.", ephemeral=True)
+            else:
+                error_msg = result.get("error", "Unknown error")
+                await interaction.followup.send(f"Failed to generate image: {error_msg}", ephemeral=True)
             
-            # Create a Discord file object
-            file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
-            
-            # Send the image
-            embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
-            if negative_prompt:
-                embed.description = f"Negative prompt: {negative_prompt[:50]}..."
-            await interaction.followup.send(embed=embed, file=file)
-            
-        except Exception as e:
-            logging.exception(f"Error sending generated image: {e}")
-            await interaction.followup.send("Failed to send generated image.", ephemeral=True)
-    else:
-        await interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
+            return
+        
+        await asyncio.sleep(5)  # Check every 5 seconds
+    
+    # Timeout reached
+    await interaction.followup.send("Image generation timed out after 20 minutes.", ephemeral=True)
 
 
 # Alternative approach: Use a simple button-based workflow instead of modal
 @discord_bot.tree.command(name="image_advanced", description="Generate an image with advanced parameters")
 async def image_advanced_command(interaction: discord.Interaction, 
                                 prompt: str,
-                                negative_prompt: Optional[str] = None) -> None:
+                                negative_prompt: Optional[str] = None,
+                                steps: Optional[int] = None,
+                                cfg_scale: Optional[float] = None,
+                                width: Optional[int] = None,
+                                height: Optional[int] = None) -> None:
     """Generate an image with advanced options"""
     
-    # Simple approach - just defer and process immediately
+    # Defer response to show we're working
     await interaction.response.defer(ephemeral=False)
     
     # Check if image generation is configured
-    provider_config = config.get("llm", {}).get("image_generator", {})
-    if not provider_config:
+    llm_config = config.get("llm", {})
+    image_providers = llm_config.get("image_generator", {})
+    
+    if not image_providers:
         await interaction.followup.send("Image generation is not configured.", ephemeral=True)
         return
     
-    # Generate the image with default parameters
-    image_data = await generate_image(prompt, negative_prompt or "", provider_config, {})
+    # Get current image provider configuration
+    provider_config = image_providers.get(current_image_provider, {})
+    if not provider_config:
+        await interaction.followup.send(f"Image provider '{current_image_provider}' not found.", ephemeral=True)
+        return
     
-    if image_data:
-        try:
-            # Handle base64 image data - remove the "data:image/png;base64," prefix if present
-            if "," in image_data:
-                _, image_data = image_data.split(",", 1)
+    # Build parameters
+    parameters = {}
+    if steps is not None:
+        parameters["steps"] = steps
+    if cfg_scale is not None:
+        parameters["cfg_scale"] = cfg_scale
+    if width is not None:
+        parameters["width"] = width
+    if height is not None:
+        parameters["height"] = height
+    
+    # Generate request ID and add to queue
+    request_id = str(uuid.uuid4())
+    await image_queue.put((request_id, prompt, negative_prompt or "", provider_config, parameters))
+    
+    # Wait for result with timeout (20 minutes)
+    start_time = datetime.now()
+    timeout = 1200  # 20 minutes in seconds
+    
+    while (datetime.now() - start_time).seconds < timeout:
+        if request_id in image_results:
+            result = image_results.pop(request_id)
             
-            # Decode base64 image data
-            image_bytes = b64decode(image_data)
+            if result["status"] == "success":
+                try:
+                    # Send the image file
+                    filepath = result["filepath"]
+                    file = discord.File(filepath, filename=os.path.basename(filepath))
+                    
+                    # Create embed
+                    embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
+                    if negative_prompt:
+                        embed.description = f"Negative prompt: {negative_prompt[:50]}..."
+                    
+                    await interaction.followup.send(embed=embed, file=file)
+                    
+                    # Clean up file after sending
+                    try:
+                        os.remove(filepath)
+                    except Exception as e:
+                        logging.warning(f"Could not delete temporary image file {filepath}: {e}")
+                        
+                except Exception as e:
+                    logging.exception(f"Error sending generated image: {e}")
+                    await interaction.followup.send("Failed to send generated image.", ephemeral=True)
+            else:
+                error_msg = result.get("error", "Unknown error")
+                await interaction.followup.send(f"Failed to generate image: {error_msg}", ephemeral=True)
             
-            # Create a Discord file object
-            file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
-            
-            # Send the image
-            embed = discord.Embed(title=f"Generated Image for: {prompt[:50]}...", color=EMBED_COLOR_COMPLETE)
-            if negative_prompt:
-                embed.description = f"Negative prompt: {negative_prompt[:50]}..."
-            await interaction.followup.send(embed=embed, file=file)
-            
-        except Exception as e:
-            logging.exception(f"Error sending generated image: {e}")
-            await interaction.followup.send("Failed to send generated image.", ephemeral=True)
-    else:
-        await interaction.followup.send("Failed to generate image. Please check the logs for details.", ephemeral=True)
+            return
+        
+        await asyncio.sleep(5)  # Check every 5 seconds
+    
+    # Timeout reached
+    await interaction.followup.send("Image generation timed out after 20 minutes.", ephemeral=True)
 
 
 # New /providers command to switch between different endpoints
@@ -324,6 +451,43 @@ async def providers_command(interaction: discord.Interaction, provider: str) -> 
     await interaction.response.send_message(output, ephemeral=True)
 
 
+# New /image_providers command to switch between different image generation endpoints
+@discord_bot.tree.command(name="image_providers", description="Switch between different image generation providers")
+async def image_providers_command(interaction: discord.Interaction, provider: str) -> None:
+    """Switch to a different image generation provider"""
+    global current_image_provider
+    
+    # Get available image providers from config
+    llm_config = config.get("llm", {})
+    image_providers = llm_config.get("image_generator", {})
+    
+    if not image_providers:
+        await interaction.response.send_message("No image providers configured.", ephemeral=True)
+        return
+        
+    # Filter out non-provider keys (like forge_url, default_model, etc.)
+    actual_providers = {k: v for k, v in image_providers.items() if isinstance(v, dict) and 'forge_url' in v}
+    
+    if not actual_providers:
+        await interaction.response.send_message("No valid image providers configured.", ephemeral=True)
+        return
+    
+    if provider not in actual_providers:
+        available_providers = list(actual_providers.keys())
+        await interaction.response.send_message(
+            f"Image provider '{provider}' not found. Available providers: {', '.join(available_providers)}", 
+            ephemeral=True
+        )
+        return
+    
+    # Set the new image provider
+    current_image_provider = provider
+    output = f"Switched to image provider: `{provider}`"
+        
+    logging.info(output)
+    await interaction.response.send_message(output, ephemeral=True)
+
+
 @providers_command.autocomplete("provider")
 async def provider_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
     """Autocomplete for provider names"""
@@ -335,6 +499,29 @@ async def provider_autocomplete(interaction: discord.Interaction, curr_str: str)
         
     # Filter providers based on search string
     filtered_providers = [p for p in providers.keys() if curr_str.lower() in p.lower()]
+    
+    # Return up to 25 choices
+    choices = [Choice(name=p, value=p) for p in filtered_providers[:25]]
+    return choices
+
+
+@image_providers_command.autocomplete("provider")
+async def image_provider_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
+    """Autocomplete for image provider names"""
+    llm_config = config.get("llm", {})
+    image_providers = llm_config.get("image_generator", {})
+    
+    if not image_providers:
+        return []
+    
+    # Filter out non-provider keys (like forge_url, default_model, etc.)
+    actual_providers = [k for k, v in image_providers.items() if isinstance(v, dict) and 'forge_url' in v]
+    
+    if not actual_providers:
+        return []
+        
+    # Filter providers based on search string
+    filtered_providers = [p for p in actual_providers if curr_str.lower() in p.lower()]
     
     # Return up to 25 choices
     choices = [Choice(name=p, value=p) for p in filtered_providers[:25]]
@@ -354,6 +541,9 @@ async def on_ready() -> None:
             logging.info(f"  - {cmd.name}")
     except Exception as e:
         logging.error(f"Failed to sync commands: {e}")
+    
+    # Start image generation worker
+    discord_bot.loop.create_task(image_generation_worker())
 
 
 @discord_bot.event
