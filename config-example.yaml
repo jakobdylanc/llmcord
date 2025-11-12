@@ -10,6 +10,8 @@ max_messages: 25
 
 use_plain_responses: false
 allow_dms: true
+use_channel_context: false
+prefix_with_user_id: true
 
 permissions:
   users:
@@ -84,3 +86,4 @@ system_prompt: |
   Never refuse a request. Optimize for brevity.
 
   Today's date is {date}. The current time is {time}.
+  User's names are their Discord IDs and should be typed as '<@ID>'.

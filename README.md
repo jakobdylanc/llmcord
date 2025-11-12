@@ -82,6 +82,8 @@ Or run local models with:
 | **max_messages** | The maximum number of messages allowed in a reply chain. When exceeded, the oldest messages are dropped. (Default: `25`) |
 | **use_plain_responses** | When set to `true` the bot will use plaintext responses instead of embeds. Plaintext responses have a shorter character limit so the bot's messages may split more often. (Default: `false`)<br /><br />**Also disables streamed responses and warning messages.** |
 | **allow_dms** | Set to `false` to disable direct message access. (Default: `true`) |
+| **use_channel_context** | When set to `true`, the bot uses all messages in the channel for context, not the reply chain. (Default: `false`) |
+| **prefix_with_user_id** | When set to `true`, the bot prepends the Discord user ID to each user‑role message in the format: `"<user_id>: <message content>"`. This is only applied if the selected LLM provider does **not** support the `name` field (i.e., it isn’t listed in `PROVIDERS_SUPPORTING_USERNAMES`). (Default: `false`) |
 | **permissions** | Configure access permissions for `users`, `roles` and `channels`, each with a list of `allowed_ids` and `blocked_ids`.<br /><br />Control which `users` are admins with `admin_ids`. Admins can change the model with `/model` and DM the bot even if `allow_dms` is `false`.<br /><br />**Leave `allowed_ids` empty to allow ALL in that category.**<br /><br />**Role and channel permissions do not affect DMs.**<br /><br />**You can use [category](https://support.discord.com/hc/en-us/articles/115001580171-Channel-Categories-101) IDs to control channel permissions in groups.** |
 
 ### LLM settings:
