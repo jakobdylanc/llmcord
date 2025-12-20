@@ -121,16 +121,19 @@ def get_config(filename: str = "config.yaml") -> dict[str, Any]:
     try:
         with open(filename, encoding="utf-8") as file:
             return yaml.safe_load(file)
-    except (UnicodeDecodeError, yaml.YAMLError) as e:
-        # If UTF-8 or YAML parsing fails, try cleaning the content
-        logging.warning(f"Config file has issues, attempting to clean: {e}")
+    except (UnicodeDecodeError, yaml.YAMLError):
+        # If UTF-8 or YAML parsing fails, silently clean the content
+        # This commonly happens on Windows with copy-pasted text containing special chars
         with open(filename, "rb") as file:
             raw = file.read()
         cleaned = clean_config_content(raw)
         try:
-            return yaml.safe_load(cleaned)
+            config = yaml.safe_load(cleaned)
+            logging.debug("Config loaded after auto-cleaning special characters")
+            return config
         except yaml.YAMLError as e2:
-            logging.error(f"Failed to parse config even after cleaning: {e2}")
+            logging.error(f"Failed to parse config.yaml: {e2}")
+            logging.error("Try recreating config.yaml from config-example.yaml")
             raise
 
 
