@@ -1,8 +1,8 @@
 # Discord settings:
 
-bot_token: 
-client_id: 
-status_message: 
+bot_token:
+client_id:
+status_message:
 
 max_text: 100000
 max_images: 5
@@ -10,6 +10,12 @@ max_messages: 25
 
 use_plain_responses: false
 allow_dms: true
+
+# CLI settings:
+# cli_enabled: Enable CLI interface to prompt the bot directly from terminal
+# local_only_mode: When true, ignores all Discord messages (CLI only - no Discord users can prompt)
+cli_enabled: false
+local_only_mode: false
 
 permissions:
   users:

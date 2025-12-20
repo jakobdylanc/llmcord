@@ -3,6 +3,7 @@ from base64 import b64encode
 from dataclasses import dataclass, field
 from datetime import datetime
 import logging
+import sys
 from typing import Any, Literal, Optional
 
 import discord
@@ -42,6 +43,7 @@ curr_model = next(iter(config["models"]))
 
 msg_nodes = {}
 last_task_time = 0
+cli_conversation: list[dict[str, str]] = []  # Conversation history for CLI mode
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -118,6 +120,11 @@ async def on_message(new_msg: discord.Message) -> None:
     channel_ids = set(filter(None, (new_msg.channel.id, getattr(new_msg.channel, "parent_id", None), getattr(new_msg.channel, "category_id", None))))
 
     config = await asyncio.to_thread(get_config)
+
+    # If local_only_mode is enabled, ignore all Discord messages (CLI only)
+    if config.get("local_only_mode", False):
+        logging.debug(f"Ignoring Discord message from {new_msg.author.id} (local_only_mode enabled)")
+        return
 
     allow_dms = config.get("allow_dms", True)
 
@@ -344,8 +351,187 @@ async def on_message(new_msg: discord.Message) -> None:
                 msg_nodes.pop(msg_id, None)
 
 
+async def cli_prompt(user_input: str) -> str:
+    """Send a prompt to the LLM from CLI and return the response."""
+    global curr_model, cli_conversation
+
+    config = get_config()
+
+    provider_slash_model = curr_model
+    model_without_suffix = provider_slash_model.removesuffix(":vision")
+    if "/" not in model_without_suffix:
+        return f"Error: Invalid model format: '{provider_slash_model}'. Expected format: 'provider/model'"
+    provider, model = model_without_suffix.split("/", 1)
+
+    if provider not in config.get("providers", {}):
+        return f"Error: Provider '{provider}' not found. Available: {list(config.get('providers', {}).keys())}"
+
+    provider_config = config["providers"][provider]
+    base_url = provider_config["base_url"]
+    api_key = provider_config.get("api_key", "sk-no-key-required")
+    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+
+    model_parameters = config["models"].get(provider_slash_model, None)
+    extra_headers = provider_config.get("extra_headers")
+    extra_query = provider_config.get("extra_query")
+    extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
+
+    max_messages = config.get("max_messages", 25)
+
+    # Add user message to conversation
+    cli_conversation.append(dict(role="user", content=user_input))
+
+    # Build messages list with system prompt
+    messages = []
+    if system_prompt := config.get("system_prompt"):
+        now = datetime.now().astimezone()
+        system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
+        messages.append(dict(role="system", content=system_prompt))
+
+    # Add conversation history (limited to max_messages)
+    messages.extend(cli_conversation[-max_messages:])
+
+    openai_kwargs = dict(
+        model=model,
+        messages=messages,
+        stream=True,
+        extra_headers=extra_headers,
+        extra_query=extra_query,
+        extra_body=extra_body
+    )
+
+    response_text = ""
+    try:
+        async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
+            if not (choice := chunk.choices[0] if chunk.choices else None):
+                continue
+            if choice.finish_reason is not None:
+                break
+            if content := choice.delta.content:
+                response_text += content
+                print(content, end="", flush=True)
+        print()  # Newline after response
+    except Exception as e:
+        return f"Error: {e}"
+
+    # Add assistant response to conversation
+    if response_text:
+        cli_conversation.append(dict(role="assistant", content=response_text))
+
+    return response_text
+
+
+async def cli_loop() -> None:
+    """Interactive CLI loop for prompting the bot directly."""
+    global curr_model, cli_conversation, config
+
+    print("\n" + "=" * 60)
+    print("CLI Mode - Prompt the bot directly")
+    print("=" * 60)
+    print(f"Current model: {curr_model}")
+    print("\nCommands:")
+    print("  /model [name]  - View or switch model")
+    print("  /clear         - Clear conversation history")
+    print("  /history       - Show conversation history")
+    print("  /quit          - Exit CLI mode")
+    print("=" * 60 + "\n")
+
+    while True:
+        try:
+            user_input = await asyncio.to_thread(input, "You: ")
+            user_input = user_input.strip()
+
+            if not user_input:
+                continue
+
+            # Handle CLI commands
+            if user_input.startswith("/"):
+                cmd_parts = user_input[1:].split(maxsplit=1)
+                cmd = cmd_parts[0].lower()
+                arg = cmd_parts[1] if len(cmd_parts) > 1 else ""
+
+                if cmd == "quit" or cmd == "exit":
+                    print("Exiting CLI mode...")
+                    break
+
+                elif cmd == "clear":
+                    cli_conversation.clear()
+                    print("Conversation history cleared.")
+                    continue
+
+                elif cmd == "history":
+                    if not cli_conversation:
+                        print("No conversation history.")
+                    else:
+                        print("\n--- Conversation History ---")
+                        for msg in cli_conversation:
+                            role = "You" if msg["role"] == "user" else "Bot"
+                            content = msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
+                            print(f"{role}: {content}")
+                        print("----------------------------\n")
+                    continue
+
+                elif cmd == "model":
+                    config = get_config()
+                    if arg:
+                        if arg in config["models"]:
+                            curr_model = arg
+                            print(f"Model switched to: {curr_model}")
+                        else:
+                            print(f"Model '{arg}' not found. Available models:")
+                            for m in config["models"]:
+                                marker = "◉" if m == curr_model else "○"
+                                print(f"  {marker} {m}")
+                    else:
+                        print(f"Current model: {curr_model}")
+                        print("Available models:")
+                        for m in config["models"]:
+                            marker = "◉" if m == curr_model else "○"
+                            print(f"  {marker} {m}")
+                    continue
+
+                else:
+                    print(f"Unknown command: /{cmd}")
+                    continue
+
+            # Send prompt to LLM
+            print("Bot: ", end="", flush=True)
+            await cli_prompt(user_input)
+
+        except EOFError:
+            print("\nExiting CLI mode...")
+            break
+        except KeyboardInterrupt:
+            print("\nExiting CLI mode...")
+            break
+
+
 async def main() -> None:
-    await discord_bot.start(config["bot_token"])
+    """Main entry point - runs Discord bot and optionally CLI."""
+    config = get_config()
+    cli_enabled = config.get("cli_enabled", False)
+    local_only = config.get("local_only_mode", False)
+
+    if local_only and not cli_enabled:
+        logging.warning("local_only_mode is enabled but cli_enabled is false. Enabling CLI automatically.")
+        cli_enabled = True
+
+    if cli_enabled:
+        # Run CLI loop concurrently with Discord bot (or alone if local_only)
+        if local_only:
+            # Just run CLI, don't connect to Discord
+            logging.info("Running in local-only CLI mode (Discord disabled)")
+            await cli_loop()
+        else:
+            # Run both Discord bot and CLI
+            logging.info("Running Discord bot with CLI enabled")
+            await asyncio.gather(
+                discord_bot.start(config["bot_token"]),
+                cli_loop()
+            )
+    else:
+        # Original behavior - just Discord bot
+        await discord_bot.start(config["bot_token"])
 
 
 try:
