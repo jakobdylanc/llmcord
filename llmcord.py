@@ -98,6 +98,8 @@ curr_model = next(iter(config["models"]))
 msg_nodes = {}
 last_task_time = 0
 cli_conversation: list[dict[str, str]] = []  # Conversation history for CLI mode
+cli_guild_id: Optional[int] = None  # Current server for CLI Discord actions
+cli_channel_id: Optional[int] = None  # Current channel for CLI Discord actions
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -881,6 +883,170 @@ async def create_thread_action(channel, params):
 
 
 # =============================================================================
+# CLI DISCORD ACTION SUPPORT
+# =============================================================================
+
+class CLIActionContext:
+    """Mock message context for CLI Discord actions."""
+    def __init__(self, guild: discord.Guild, channel: discord.TextChannel):
+        self.guild = guild
+        self.channel = channel
+
+
+async def execute_cli_discord_action(action: str, params: str) -> str:
+    """Execute a Discord action from CLI context."""
+    global cli_guild_id, cli_channel_id
+
+    if cli_guild_id is None:
+        return "Error: No server selected. Use /server to select a server first."
+
+    guild = discord_bot.get_guild(cli_guild_id)
+    if not guild:
+        return f"Error: Could not find server with ID {cli_guild_id}. Use /servers to list available servers."
+
+    channel = None
+    if cli_channel_id:
+        channel = guild.get_channel(cli_channel_id)
+
+    # Create a mock context for the action
+    context = CLIActionContext(guild, channel)
+
+    params_list = params.split(':') if params else []
+
+    # Map actions to their handlers
+    action_map = {
+        'LIST_CHANNELS': lambda: DiscordActions.list_channels(guild, params_list[0] if params_list else "all"),
+        'READ_CHANNEL': lambda: cli_read_channel_action(guild, params_list),
+        'CHANNEL_INFO': lambda: cli_channel_info_action(guild, params_list),
+        'FIND_CHANNEL_MENTIONS': lambda: cli_find_mentions_action(guild, params_list),
+        'BROWSE_MENTIONED_CHANNELS': lambda: cli_browse_mentions_action(guild, params_list),
+        'SERVER_INFO': lambda: DiscordActions.get_server_info(guild),
+        'LIST_ROLES': lambda: DiscordActions.list_roles(guild),
+        'LIST_MEMBERS': lambda: DiscordActions.list_members(guild, params_list[0] if params_list else None),
+        'USER_INFO': lambda: cli_user_info_action(guild, params_list),
+        'SEARCH_MESSAGES': lambda: cli_search_action(guild, channel, params_list),
+        'GET_PINNED': lambda: cli_pinned_action(guild, channel, params_list),
+        'LIST_THREADS': lambda: cli_threads_action(guild, channel, params_list),
+        'VOICE_STATUS': lambda: DiscordActions.get_voice_status(guild),
+        'LIST_EMOJIS': lambda: DiscordActions.list_emojis(guild),
+        'SCHEDULED_EVENTS': lambda: DiscordActions.get_scheduled_events(guild),
+        'ADD_REACTION': lambda: cli_reaction_action(channel, params_list, add=True),
+        'REMOVE_REACTION': lambda: cli_reaction_action(channel, params_list, add=False),
+        'MESSAGE_INFO': lambda: cli_message_info_action(channel, params_list),
+        'CREATE_THREAD': lambda: cli_create_thread_action(channel, params_list),
+    }
+
+    if action not in action_map:
+        return f"Unknown action: {action}"
+
+    return await action_map[action]()
+
+
+# CLI-specific action helpers (use current channel from CLI context)
+async def cli_read_channel_action(guild, params):
+    if not params:
+        return "Error: Channel name/ID required."
+    ch = await DiscordActions.get_channel_by_name_or_id(guild, params[0])
+    limit = int(params[1]) if len(params) > 1 else 20
+    return await DiscordActions.read_channel(ch, limit)
+
+
+async def cli_channel_info_action(guild, params):
+    if not params:
+        return "Error: Channel name/ID required."
+    ch = await DiscordActions.get_channel_by_name_or_id(guild, params[0])
+    return await DiscordActions.get_channel_info(ch)
+
+
+async def cli_find_mentions_action(guild, params):
+    if not params:
+        return "Error: Channel name/ID required."
+    ch = await DiscordActions.get_channel_by_name_or_id(guild, params[0])
+    limit = int(params[1]) if len(params) > 1 else 50
+    return await DiscordActions.find_channel_mentions(ch, limit)
+
+
+async def cli_browse_mentions_action(guild, params):
+    if not params:
+        return "Error: Channel name/ID required."
+    ch = await DiscordActions.get_channel_by_name_or_id(guild, params[0])
+    msg_limit = int(params[1]) if len(params) > 1 else 50
+    read_limit = int(params[2]) if len(params) > 2 else 10
+    return await DiscordActions.browse_mentioned_channels(ch, msg_limit, read_limit)
+
+
+async def cli_user_info_action(guild, params):
+    if not params:
+        return "Error: User name/ID required."
+    member = await DiscordActions.get_user_by_name_or_id(guild, params[0])
+    return await DiscordActions.get_user_info(member)
+
+
+async def cli_search_action(guild, channel, params):
+    if len(params) < 1:
+        return "Error: Search query required."
+    query = params[0]
+    if len(params) > 1:
+        ch = await DiscordActions.get_channel_by_name_or_id(guild, params[1])
+    elif channel:
+        ch = channel
+    else:
+        return "Error: No channel specified. Use /channel to set one or provide channel name."
+    limit = int(params[2]) if len(params) > 2 else 50
+    return await DiscordActions.search_messages(ch, query, limit)
+
+
+async def cli_pinned_action(guild, channel, params):
+    if params:
+        ch = await DiscordActions.get_channel_by_name_or_id(guild, params[0])
+    elif channel:
+        ch = channel
+    else:
+        return "Error: No channel specified."
+    return await DiscordActions.get_pinned_messages(ch)
+
+
+async def cli_threads_action(guild, channel, params):
+    if params:
+        ch = await DiscordActions.get_channel_by_name_or_id(guild, params[0])
+    elif channel:
+        ch = channel
+    else:
+        return "Error: No channel specified."
+    include_archived = len(params) > 1 and params[1].lower() == 'true'
+    return await DiscordActions.list_threads(ch, include_archived)
+
+
+async def cli_reaction_action(channel, params, add=True):
+    if not channel:
+        return "Error: No channel set. Use /channel first."
+    if len(params) < 2:
+        return "Error: Message ID and emoji required."
+    msg = await DiscordActions.fetch_message_by_id(channel, int(params[0]))
+    if add:
+        return await DiscordActions.add_reaction(msg, params[1])
+    return await DiscordActions.remove_reaction(msg, params[1])
+
+
+async def cli_message_info_action(channel, params):
+    if not channel:
+        return "Error: No channel set. Use /channel first."
+    if not params:
+        return "Error: Message ID required."
+    msg = await DiscordActions.fetch_message_by_id(channel, int(params[0]))
+    return await DiscordActions.get_message_info(msg)
+
+
+async def cli_create_thread_action(channel, params):
+    if not channel:
+        return "Error: No channel set. Use /channel first."
+    if len(params) < 2:
+        return "Error: Message ID and thread name required."
+    msg = await DiscordActions.fetch_message_by_id(channel, int(params[0]))
+    return await DiscordActions.create_thread(msg, params[1])
+
+
+# =============================================================================
 # END DISCORD ACTION SYSTEM
 # =============================================================================
 
@@ -1485,9 +1651,25 @@ async def cli_prompt(user_input: str) -> str:
 
     # Build messages list with system prompt
     messages = []
-    if system_prompt := config.get("system_prompt"):
-        now = datetime.now().astimezone()
+    system_prompt = config.get("system_prompt", "")
+    now = datetime.now().astimezone()
+
+    if system_prompt:
         system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
+
+    # Add Discord actions prompt if enabled and server is selected
+    discord_actions_enabled = config.get("enable_discord_actions", True) and cli_guild_id is not None
+    if discord_actions_enabled:
+        guild = discord_bot.get_guild(cli_guild_id)
+        if guild:
+            server_context = f"\n\nYou are connected to Discord server: {guild.name} (ID: {guild.id})"
+            if cli_channel_id:
+                channel = guild.get_channel(cli_channel_id)
+                if channel:
+                    server_context += f"\nCurrent channel: #{channel.name}"
+            system_prompt += server_context + DISCORD_ACTIONS_PROMPT
+
+    if system_prompt.strip():
         messages.append(dict(role="system", content=system_prompt))
 
     # Add conversation history (limited to max_messages)
@@ -1520,33 +1702,72 @@ async def cli_prompt(user_input: str) -> str:
     if response_text:
         cli_conversation.append(dict(role="assistant", content=response_text))
 
+    # Execute any Discord actions in the response
+    if discord_actions_enabled and response_text:
+        action_matches = ACTION_PATTERN.findall(response_text)
+        if action_matches:
+            print("\n--- Discord Action Results ---")
+            for action, params in action_matches:
+                try:
+                    result = await execute_cli_discord_action(action, params)
+                    print(f"\n[{action}]:\n{result}")
+                    logging.info(f"CLI executed Discord action: {action} with params: {params}")
+                except Exception as e:
+                    print(f"\n[{action}]: Error - {str(e)}")
+                    logging.exception(f"Error executing CLI Discord action: {action}")
+            print("------------------------------\n")
+
     return response_text
 
 
 async def cli_loop() -> None:
     """Interactive CLI loop for prompting the bot directly."""
-    global curr_model, cli_conversation, config
+    global curr_model, cli_conversation, config, cli_guild_id, cli_channel_id
 
     # Wait for Discord bot to be ready before starting CLI
     await bot_ready_event.wait()
-    
+
     # Small delay to let any remaining Discord logs flush
     await asyncio.sleep(0.5)
+
+    # Auto-select first server if only one is available
+    if len(discord_bot.guilds) == 1:
+        cli_guild_id = discord_bot.guilds[0].id
+        print(f"\nAuto-selected server: {discord_bot.guilds[0].name}")
 
     print("\n" + "=" * 60)
     print("CLI Mode - Prompt the bot directly")
     print("=" * 60)
     print(f"Current model: {curr_model}")
+    if cli_guild_id:
+        guild = discord_bot.get_guild(cli_guild_id)
+        print(f"Connected to server: {guild.name if guild else 'Unknown'}")
     print("\nCommands:")
-    print("  /model [name]  - View or switch model")
-    print("  /clear         - Clear conversation history")
-    print("  /history       - Show conversation history")
-    print("  /quit          - Exit CLI mode")
+    print("  /model [name]   - View or switch model")
+    print("  /servers        - List available Discord servers")
+    print("  /server [id]    - Select a Discord server for actions")
+    print("  /channels       - List channels in current server")
+    print("  /channel [name] - Select a channel for actions")
+    print("  /discord [cmd]  - Execute Discord action directly")
+    print("  /clear          - Clear conversation history")
+    print("  /history        - Show conversation history")
+    print("  /quit           - Exit CLI mode")
     print("=" * 60 + "\n")
 
     while True:
         try:
-            user_input = await asyncio.to_thread(input, "You: ")
+            # Show context in prompt
+            prompt_prefix = "You"
+            if cli_guild_id:
+                guild = discord_bot.get_guild(cli_guild_id)
+                if guild:
+                    prompt_prefix = f"[{guild.name[:15]}]"
+                    if cli_channel_id:
+                        channel = guild.get_channel(cli_channel_id)
+                        if channel:
+                            prompt_prefix += f" #{channel.name[:15]}"
+
+            user_input = await asyncio.to_thread(input, f"{prompt_prefix}: ")
             user_input = user_input.strip()
 
             if not user_input:
@@ -1598,8 +1819,111 @@ async def cli_loop() -> None:
                             print(f"  {marker} {m}")
                     continue
 
+                elif cmd == "servers":
+                    if not discord_bot.guilds:
+                        print("Bot is not in any servers.")
+                    else:
+                        print("\nAvailable Discord Servers:")
+                        for guild in discord_bot.guilds:
+                            marker = "◉" if guild.id == cli_guild_id else "○"
+                            print(f"  {marker} {guild.name} (ID: {guild.id})")
+                        print("\nUse /server <id> to select a server")
+                    continue
+
+                elif cmd == "server":
+                    if not arg:
+                        if cli_guild_id:
+                            guild = discord_bot.get_guild(cli_guild_id)
+                            print(f"Current server: {guild.name if guild else 'Unknown'} (ID: {cli_guild_id})")
+                        else:
+                            print("No server selected. Use /servers to list available servers.")
+                    else:
+                        try:
+                            guild_id = int(arg)
+                            guild = discord_bot.get_guild(guild_id)
+                            if guild:
+                                cli_guild_id = guild_id
+                                cli_channel_id = None  # Reset channel when switching servers
+                                print(f"Switched to server: {guild.name}")
+                                print("Discord actions are now enabled for this server!")
+                            else:
+                                print(f"Server with ID {guild_id} not found.")
+                        except ValueError:
+                            # Try to find by name
+                            found = None
+                            for guild in discord_bot.guilds:
+                                if arg.lower() in guild.name.lower():
+                                    found = guild
+                                    break
+                            if found:
+                                cli_guild_id = found.id
+                                cli_channel_id = None
+                                print(f"Switched to server: {found.name}")
+                                print("Discord actions are now enabled for this server!")
+                            else:
+                                print(f"Server '{arg}' not found. Use /servers to list available servers.")
+                    continue
+
+                elif cmd == "channels":
+                    if not cli_guild_id:
+                        print("No server selected. Use /server first.")
+                    else:
+                        guild = discord_bot.get_guild(cli_guild_id)
+                        if guild:
+                            result = await DiscordActions.list_channels(guild, "text")
+                            print(f"\n{result}\n")
+                        else:
+                            print("Server not found.")
+                    continue
+
+                elif cmd == "channel":
+                    if not cli_guild_id:
+                        print("No server selected. Use /server first.")
+                    elif not arg:
+                        if cli_channel_id:
+                            guild = discord_bot.get_guild(cli_guild_id)
+                            if guild:
+                                channel = guild.get_channel(cli_channel_id)
+                                print(f"Current channel: #{channel.name if channel else 'Unknown'}")
+                        else:
+                            print("No channel selected. Use /channels to list available channels.")
+                    else:
+                        guild = discord_bot.get_guild(cli_guild_id)
+                        if guild:
+                            channel = await DiscordActions.get_channel_by_name_or_id(guild, arg)
+                            if channel:
+                                cli_channel_id = channel.id
+                                print(f"Switched to channel: #{channel.name}")
+                            else:
+                                print(f"Channel '{arg}' not found.")
+                        else:
+                            print("Server not found.")
+                    continue
+
+                elif cmd == "discord":
+                    # Direct Discord action execution
+                    if not cli_guild_id:
+                        print("No server selected. Use /server first.")
+                    elif not arg:
+                        print("Usage: /discord <ACTION:params>")
+                        print("Example: /discord LIST_CHANNELS")
+                        print("Example: /discord READ_CHANNEL:general:10")
+                    else:
+                        # Parse the action
+                        if ':' in arg:
+                            action_name, params = arg.split(':', 1)
+                        else:
+                            action_name, params = arg, ""
+                        try:
+                            result = await execute_cli_discord_action(action_name.upper(), params)
+                            print(f"\n{result}\n")
+                        except Exception as e:
+                            print(f"Error: {str(e)}")
+                    continue
+
                 else:
                     print(f"Unknown command: /{cmd}")
+                    print("Use /quit to exit, /servers to list servers, /help for more commands")
                     continue
 
             # Send prompt to LLM
