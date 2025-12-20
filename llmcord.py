@@ -30,6 +30,9 @@ EDIT_DELAY_SECONDS = 1
 
 MAX_MESSAGE_NODES = 500
 
+# Event to signal when Discord bot is ready
+bot_ready_event = asyncio.Event()
+
 
 def get_config(filename: str = "config.yaml") -> dict[str, Any]:
     with open(filename, encoding="utf-8") as file:
@@ -105,6 +108,9 @@ async def on_ready() -> None:
         logging.info(f"\n\nBOT INVITE URL:\nhttps://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot\n")
 
     await discord_bot.tree.sync()
+    
+    # Signal that bot is ready
+    bot_ready_event.set()
 
 
 @discord_bot.event
@@ -424,6 +430,12 @@ async def cli_prompt(user_input: str) -> str:
 async def cli_loop() -> None:
     """Interactive CLI loop for prompting the bot directly."""
     global curr_model, cli_conversation, config
+
+    # Wait for Discord bot to be ready before starting CLI
+    await bot_ready_event.wait()
+    
+    # Small delay to let any remaining Discord logs flush
+    await asyncio.sleep(0.5)
 
     print("\n" + "=" * 60)
     print("CLI Mode - Prompt the bot directly")
