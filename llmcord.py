@@ -516,19 +516,16 @@ async def main() -> None:
         logging.warning("local_only_mode is enabled but cli_enabled is false. Enabling CLI automatically.")
         cli_enabled = True
 
+    if local_only:
+        logging.info("Running in local-only mode (Discord connected but ignores prompts)")
+
     if cli_enabled:
-        # Run CLI loop concurrently with Discord bot (or alone if local_only)
-        if local_only:
-            # Just run CLI, don't connect to Discord
-            logging.info("Running in local-only CLI mode (Discord disabled)")
-            await cli_loop()
-        else:
-            # Run both Discord bot and CLI
-            logging.info("Running Discord bot with CLI enabled")
-            await asyncio.gather(
-                discord_bot.start(config["bot_token"]),
-                cli_loop()
-            )
+        # Run both Discord bot and CLI together
+        logging.info("CLI mode enabled")
+        await asyncio.gather(
+            discord_bot.start(config["bot_token"]),
+            cli_loop()
+        )
     else:
         # Original behavior - just Discord bot
         await discord_bot.start(config["bot_token"])

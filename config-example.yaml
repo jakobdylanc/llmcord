@@ -13,7 +13,7 @@ allow_dms: true
 
 # CLI settings:
 # cli_enabled: Enable CLI interface to prompt the bot directly from terminal
-# local_only_mode: When true, ignores all Discord messages (CLI only - no Discord users can prompt)
+# local_only_mode: When true, bot stays online in Discord but ignores all messages (only CLI can prompt)
 cli_enabled: false
 local_only_mode: false
 
