@@ -85,28 +85,53 @@ You can use multiple actions in a single response if needed.
 bot_ready_event = asyncio.Event()
 
 
+def clean_config_content(raw_bytes: bytes) -> str:
+    """Clean config content by removing problematic characters."""
+    # Try multiple encodings
+    for encoding in ["utf-8", "utf-8-sig", "cp1252", "latin-1"]:
+        try:
+            decoded = raw_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        # Last resort: decode with replacement
+        decoded = raw_bytes.decode("utf-8", errors="replace")
+
+    # Remove C1 control characters (0x80-0x9F) and other problematic chars
+    # Keep printable chars, newlines, tabs, and common Unicode
+    cleaned_chars = []
+    for char in decoded:
+        code = ord(char)
+        # Skip C1 control characters (0x80-0x9F) - these cause YAML errors
+        if 0x80 <= code <= 0x9F:
+            continue
+        # Skip replacement character
+        if code == 0xFFFD:
+            continue
+        # Keep printable, newlines, tabs
+        if char.isprintable() or char in '\n\r\t':
+            cleaned_chars.append(char)
+
+    return ''.join(cleaned_chars)
+
+
 def get_config(filename: str = "config.yaml") -> dict[str, Any]:
     """Load config with robust encoding handling to prevent Unicode errors."""
     try:
         with open(filename, encoding="utf-8") as file:
             return yaml.safe_load(file)
-    except UnicodeDecodeError:
-        # Try with error handling if UTF-8 fails
-        logging.warning(f"Config file has encoding issues, attempting to clean...")
-        with open(filename, encoding="utf-8", errors="replace") as file:
-            content = file.read()
-        # Remove replacement characters and other problematic chars
-        cleaned = ''.join(char for char in content if char.isprintable() or char in '\n\r\t')
-        return yaml.safe_load(cleaned)
-    except yaml.YAMLError as e:
-        # If YAML parsing fails due to special characters, try cleaning
-        logging.warning(f"YAML parsing error, attempting to clean config: {e}")
+    except (UnicodeDecodeError, yaml.YAMLError) as e:
+        # If UTF-8 or YAML parsing fails, try cleaning the content
+        logging.warning(f"Config file has issues, attempting to clean: {e}")
         with open(filename, "rb") as file:
             raw = file.read()
-        # Decode with replacement, then filter to printable ASCII + common chars
-        decoded = raw.decode("utf-8", errors="replace")
-        cleaned = ''.join(char for char in decoded if char.isprintable() or char in '\n\r\t')
-        return yaml.safe_load(cleaned)
+        cleaned = clean_config_content(raw)
+        try:
+            return yaml.safe_load(cleaned)
+        except yaml.YAMLError as e2:
+            logging.error(f"Failed to parse config even after cleaning: {e2}")
+            raise
 
 
 config = get_config()
