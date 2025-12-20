@@ -86,8 +86,27 @@ bot_ready_event = asyncio.Event()
 
 
 def get_config(filename: str = "config.yaml") -> dict[str, Any]:
-    with open(filename, encoding="utf-8") as file:
-        return yaml.safe_load(file)
+    """Load config with robust encoding handling to prevent Unicode errors."""
+    try:
+        with open(filename, encoding="utf-8") as file:
+            return yaml.safe_load(file)
+    except UnicodeDecodeError:
+        # Try with error handling if UTF-8 fails
+        logging.warning(f"Config file has encoding issues, attempting to clean...")
+        with open(filename, encoding="utf-8", errors="replace") as file:
+            content = file.read()
+        # Remove replacement characters and other problematic chars
+        cleaned = ''.join(char for char in content if char.isprintable() or char in '\n\r\t')
+        return yaml.safe_load(cleaned)
+    except yaml.YAMLError as e:
+        # If YAML parsing fails due to special characters, try cleaning
+        logging.warning(f"YAML parsing error, attempting to clean config: {e}")
+        with open(filename, "rb") as file:
+            raw = file.read()
+        # Decode with replacement, then filter to printable ASCII + common chars
+        decoded = raw.decode("utf-8", errors="replace")
+        cleaned = ''.join(char for char in decoded if char.isprintable() or char in '\n\r\t')
+        return yaml.safe_load(cleaned)
 
 
 config = get_config()
