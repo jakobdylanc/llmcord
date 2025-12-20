@@ -17,6 +17,16 @@ allow_dms: true
 cli_enabled: false
 local_only_mode: false
 
+# Advanced Discord Actions:
+# enable_discord_actions: When true, the LLM can perform advanced Discord operations like:
+#   - Reading messages from any channel
+#   - Browsing through mentioned channels
+#   - Listing server info, roles, members
+#   - Searching messages, viewing pinned content
+#   - Adding reactions, creating threads, and more
+# The LLM will use special [[ACTION:...]] syntax to trigger these operations
+enable_discord_actions: true
+
 permissions:
   users:
     admin_ids: []
