@@ -3,6 +3,7 @@ from base64 import b64encode
 from dataclasses import dataclass, field
 from datetime import datetime
 import logging
+import sys
 from typing import Any, Literal, Optional
 
 import discord
@@ -36,10 +37,13 @@ def get_config(filename: str = "config.yaml") -> dict[str, Any]:
 
 
 config = get_config()
+if not config.get("models"):
+    raise ValueError("No models configured in config.yaml. Please add at least one model.")
 curr_model = next(iter(config["models"]))
 
 msg_nodes = {}
 last_task_time = 0
+cli_conversation: list[dict[str, str]] = []  # Conversation history for CLI mode
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -117,6 +121,11 @@ async def on_message(new_msg: discord.Message) -> None:
 
     config = await asyncio.to_thread(get_config)
 
+    # If local_only_mode is enabled, ignore all Discord messages (CLI only)
+    if config.get("local_only_mode", False):
+        logging.debug(f"Ignoring Discord message from {new_msg.author.id} (local_only_mode enabled)")
+        return
+
     allow_dms = config.get("allow_dms", True)
 
     permissions = config["permissions"]
@@ -139,8 +148,15 @@ async def on_message(new_msg: discord.Message) -> None:
         return
 
     provider_slash_model = curr_model
-    provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
+    model_without_suffix = provider_slash_model.removesuffix(":vision")
+    if "/" not in model_without_suffix:
+        logging.error(f"Invalid model format: '{provider_slash_model}'. Expected format: 'provider/model'")
+        return
+    provider, model = model_without_suffix.split("/", 1)
 
+    if provider not in config.get("providers", {}):
+        logging.error(f"Provider '{provider}' not found in config. Available providers: {list(config.get('providers', {}).keys())}")
+        return
     provider_config = config["providers"][provider]
 
     base_url = provider_config["base_url"]
@@ -165,11 +181,11 @@ async def on_message(new_msg: discord.Message) -> None:
     user_warnings = set()
     curr_msg = new_msg
 
-    while curr_msg != None and len(messages) < max_messages:
+    while curr_msg is not None and len(messages) < max_messages:
         curr_node = msg_nodes.setdefault(curr_msg.id, MsgNode())
 
         async with curr_node.lock:
-            if curr_node.text == None:
+            if curr_node.text is None:
                 cleaned_content = curr_msg.content.removeprefix(discord_bot.user.mention).lstrip()
 
                 good_attachments = [att for att in curr_msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
@@ -197,7 +213,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
                 try:
                     if (
-                        curr_msg.reference == None
+                        curr_msg.reference is None
                         and discord_bot.user.mention not in curr_msg.content
                         and (prev_msg_in_channel := ([m async for m in curr_msg.channel.history(before=curr_msg, limit=1)] or [None])[0])
                         and prev_msg_in_channel.type in (discord.MessageType.default, discord.MessageType.reply)
@@ -206,7 +222,7 @@ async def on_message(new_msg: discord.Message) -> None:
                         curr_node.parent_msg = prev_msg_in_channel
                     else:
                         is_public_thread = curr_msg.channel.type == discord.ChannelType.public_thread
-                        parent_is_thread_start = is_public_thread and curr_msg.reference == None and curr_msg.channel.parent.type == discord.ChannelType.text
+                        parent_is_thread_start = is_public_thread and curr_msg.reference is None and curr_msg.channel.parent.type == discord.ChannelType.text
 
                         if parent_msg_id := curr_msg.channel.id if parent_is_thread_start else getattr(curr_msg.reference, "message_id", None):
                             if parent_is_thread_start:
@@ -225,7 +241,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
             if content != "":
                 message = dict(content=content, role=curr_node.role)
-                if accept_usernames and curr_node.user_id != None:
+                if accept_usernames and curr_node.user_id is not None:
                     message["name"] = str(curr_node.user_id)
 
                 messages.append(message)
@@ -236,7 +252,7 @@ async def on_message(new_msg: discord.Message) -> None:
                 user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message" if max_images > 0 else "⚠️ Can't see images")
             if curr_node.has_bad_attachments:
                 user_warnings.add("⚠️ Unsupported attachments")
-            if curr_node.fetch_parent_failed or (curr_node.parent_msg != None and len(messages) == max_messages):
+            if curr_node.fetch_parent_failed or (curr_node.parent_msg is not None and len(messages) == max_messages):
                 user_warnings.add(f"⚠️ Only using last {len(messages)} message{'' if len(messages) == 1 else 's'}")
 
             curr_msg = curr_node.parent_msg
@@ -276,7 +292,7 @@ async def on_message(new_msg: discord.Message) -> None:
     try:
         async with new_msg.channel.typing():
             async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
-                if finish_reason != None:
+                if finish_reason is not None:
                     break
 
                 if not (choice := chunk.choices[0] if chunk.choices else None):
@@ -287,7 +303,7 @@ async def on_message(new_msg: discord.Message) -> None:
                 prev_content = curr_content or ""
                 curr_content = choice.delta.content or ""
 
-                new_content = prev_content if finish_reason == None else (prev_content + curr_content)
+                new_content = prev_content if finish_reason is None else (prev_content + curr_content)
 
                 if response_contents == [] and new_content == "":
                     continue
@@ -301,9 +317,9 @@ async def on_message(new_msg: discord.Message) -> None:
                     time_delta = datetime.now().timestamp() - last_task_time
 
                     ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
-                    msg_split_incoming = finish_reason == None and len(response_contents[-1] + curr_content) > max_message_length
-                    is_final_edit = finish_reason != None or msg_split_incoming
-                    is_good_finish = finish_reason != None and finish_reason.lower() in ("stop", "end_turn")
+                    msg_split_incoming = finish_reason is None and len(response_contents[-1] + curr_content) > max_message_length
+                    is_final_edit = finish_reason is not None or msg_split_incoming
+                    is_good_finish = finish_reason is not None and finish_reason.lower() in ("stop", "end_turn")
 
                     if start_next_msg or ready_to_edit or is_final_edit:
                         embed.description = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
@@ -312,7 +328,7 @@ async def on_message(new_msg: discord.Message) -> None:
                         if start_next_msg:
                             await reply_helper(embed=embed, silent=True)
                         else:
-                            await asyncio.sleep(EDIT_DELAY_SECONDS - time_delta)
+                            await asyncio.sleep(max(0, EDIT_DELAY_SECONDS - time_delta))
                             await response_msgs[-1].edit(embed=embed)
 
                         last_task_time = datetime.now().timestamp()
@@ -335,8 +351,184 @@ async def on_message(new_msg: discord.Message) -> None:
                 msg_nodes.pop(msg_id, None)
 
 
+async def cli_prompt(user_input: str) -> str:
+    """Send a prompt to the LLM from CLI and return the response."""
+    global curr_model, cli_conversation
+
+    config = get_config()
+
+    provider_slash_model = curr_model
+    model_without_suffix = provider_slash_model.removesuffix(":vision")
+    if "/" not in model_without_suffix:
+        return f"Error: Invalid model format: '{provider_slash_model}'. Expected format: 'provider/model'"
+    provider, model = model_without_suffix.split("/", 1)
+
+    if provider not in config.get("providers", {}):
+        return f"Error: Provider '{provider}' not found. Available: {list(config.get('providers', {}).keys())}"
+
+    provider_config = config["providers"][provider]
+    base_url = provider_config["base_url"]
+    api_key = provider_config.get("api_key", "sk-no-key-required")
+    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+
+    model_parameters = config["models"].get(provider_slash_model, None)
+    extra_headers = provider_config.get("extra_headers")
+    extra_query = provider_config.get("extra_query")
+    extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
+
+    max_messages = config.get("max_messages", 25)
+
+    # Add user message to conversation
+    cli_conversation.append(dict(role="user", content=user_input))
+
+    # Build messages list with system prompt
+    messages = []
+    if system_prompt := config.get("system_prompt"):
+        now = datetime.now().astimezone()
+        system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
+        messages.append(dict(role="system", content=system_prompt))
+
+    # Add conversation history (limited to max_messages)
+    messages.extend(cli_conversation[-max_messages:])
+
+    openai_kwargs = dict(
+        model=model,
+        messages=messages,
+        stream=True,
+        extra_headers=extra_headers,
+        extra_query=extra_query,
+        extra_body=extra_body
+    )
+
+    response_text = ""
+    try:
+        async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
+            if not (choice := chunk.choices[0] if chunk.choices else None):
+                continue
+            if choice.finish_reason is not None:
+                break
+            if content := choice.delta.content:
+                response_text += content
+                print(content, end="", flush=True)
+        print()  # Newline after response
+    except Exception as e:
+        return f"Error: {e}"
+
+    # Add assistant response to conversation
+    if response_text:
+        cli_conversation.append(dict(role="assistant", content=response_text))
+
+    return response_text
+
+
+async def cli_loop() -> None:
+    """Interactive CLI loop for prompting the bot directly."""
+    global curr_model, cli_conversation, config
+
+    print("\n" + "=" * 60)
+    print("CLI Mode - Prompt the bot directly")
+    print("=" * 60)
+    print(f"Current model: {curr_model}")
+    print("\nCommands:")
+    print("  /model [name]  - View or switch model")
+    print("  /clear         - Clear conversation history")
+    print("  /history       - Show conversation history")
+    print("  /quit          - Exit CLI mode")
+    print("=" * 60 + "\n")
+
+    while True:
+        try:
+            user_input = await asyncio.to_thread(input, "You: ")
+            user_input = user_input.strip()
+
+            if not user_input:
+                continue
+
+            # Handle CLI commands
+            if user_input.startswith("/"):
+                cmd_parts = user_input[1:].split(maxsplit=1)
+                cmd = cmd_parts[0].lower()
+                arg = cmd_parts[1] if len(cmd_parts) > 1 else ""
+
+                if cmd == "quit" or cmd == "exit":
+                    print("Exiting CLI mode...")
+                    break
+
+                elif cmd == "clear":
+                    cli_conversation.clear()
+                    print("Conversation history cleared.")
+                    continue
+
+                elif cmd == "history":
+                    if not cli_conversation:
+                        print("No conversation history.")
+                    else:
+                        print("\n--- Conversation History ---")
+                        for msg in cli_conversation:
+                            role = "You" if msg["role"] == "user" else "Bot"
+                            content = msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
+                            print(f"{role}: {content}")
+                        print("----------------------------\n")
+                    continue
+
+                elif cmd == "model":
+                    config = get_config()
+                    if arg:
+                        if arg in config["models"]:
+                            curr_model = arg
+                            print(f"Model switched to: {curr_model}")
+                        else:
+                            print(f"Model '{arg}' not found. Available models:")
+                            for m in config["models"]:
+                                marker = "◉" if m == curr_model else "○"
+                                print(f"  {marker} {m}")
+                    else:
+                        print(f"Current model: {curr_model}")
+                        print("Available models:")
+                        for m in config["models"]:
+                            marker = "◉" if m == curr_model else "○"
+                            print(f"  {marker} {m}")
+                    continue
+
+                else:
+                    print(f"Unknown command: /{cmd}")
+                    continue
+
+            # Send prompt to LLM
+            print("Bot: ", end="", flush=True)
+            await cli_prompt(user_input)
+
+        except EOFError:
+            print("\nExiting CLI mode...")
+            break
+        except KeyboardInterrupt:
+            print("\nExiting CLI mode...")
+            break
+
+
 async def main() -> None:
-    await discord_bot.start(config["bot_token"])
+    """Main entry point - runs Discord bot and optionally CLI."""
+    config = get_config()
+    cli_enabled = config.get("cli_enabled", False)
+    local_only = config.get("local_only_mode", False)
+
+    if local_only and not cli_enabled:
+        logging.warning("local_only_mode is enabled but cli_enabled is false. Enabling CLI automatically.")
+        cli_enabled = True
+
+    if local_only:
+        logging.info("Running in local-only mode (Discord connected but ignores prompts)")
+
+    if cli_enabled:
+        # Run both Discord bot and CLI together
+        logging.info("CLI mode enabled")
+        await asyncio.gather(
+            discord_bot.start(config["bot_token"]),
+            cli_loop()
+        )
+    else:
+        # Original behavior - just Discord bot
+        await discord_bot.start(config["bot_token"])
 
 
 try:
