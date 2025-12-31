@@ -2,3 +2,4 @@ discord.py>=2.6.0
 httpx
 openai
 pyyaml
+PyNaCl>=1.5.0
