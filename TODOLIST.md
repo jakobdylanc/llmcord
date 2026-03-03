@@ -10,11 +10,11 @@ Check items off as they're completed.
 ## ✅ Done
 
 - [x] Config loader & validator (`bot/config/loader.py`, `bot/config/validator.py`)
-- [x] Ollama provider with tool calling (`web_search`, `web_fetch`, `visuals_core`, `get_market_prices`)
-- [x] Brave API web search (`web_search_provider: brave`; works with all providers)
+- [x] Ollama provider with tool calling (`web_search`, `visuals_core`, `get_market_prices`)
+- [x] Brave API web search for all providers (including Ollama)
 - [x] Tool schemas decoupled from tool callables — each tool file owns both
 - [x] `registry.py` as single source of truth for all tool schemas
-- [x] `build_tool_registry(client)` — `ollama_service.py` has zero hardcoded tool names
+- [x] `build_tool_registry()` — single registry; web_search uses Brave for all providers
 - [x] `ToolEntry` dataclass (schema + fn + formatter) — uniform tool contract
 - [x] `SKILLS.md` — human + AI reference for adding/using tools
 - [x] Fallback model chain — primary → model fallbacks → global fallbacks
@@ -33,7 +33,7 @@ Check items off as they're completed.
 
 ## 🔧 In Progress / Next Up
 
-- [ ] **Tool result timeout** — individual tool calls (e.g. slow `web_fetch`) can hang;
+- [ ] **Tool result timeout** — individual tool calls can hang;
       add per-tool timeout wrapping `entry.fn(**args)` in `OllamaService.run()`
 - [ ] **Multi Recivers support in Scheduled Task** — Support DM to user and send Message to a channel at the same time when both `user_id` and `channel_id` are gave in the task.yaml.
 
@@ -68,5 +68,4 @@ Check items off as they're completed.
 - `qwen3:14b` with `think: true` bleeds reasoning tokens into tool call JSON, causing
   Ollama to return HTTP 500. Workaround is already in place (retry without tools), but
   the model is fundamentally unreliable for tool calling. Use `qwen2.5:14b` instead.
-- `web_fetch` is Ollama-native only; with `web_search_provider: brave` (e.g. OpenRouter)
-  `web_fetch` is unavailable. Use `web_search` for OpenRouter/OpenAI (Brave backend).
+- Web search is Brave-only for all providers; `web_fetch` has been removed.

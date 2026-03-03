@@ -7,12 +7,7 @@ max_text: 100000
 max_images: 5
 max_messages: 25
 
-# Web search provider for tool-calling models (all providers):
-#   brave  — Bot calls Brave Search API directly. Works with Ollama, OpenAI, OpenRouter, etc.
-#             Requires BRAVE_API_KEY in .env
-#   ollama — Ollama server handles search natively. Only works with Ollama provider.
-web_search_provider: brave
-
+# Web search uses Brave API for all providers. Set BRAVE_API_KEY in .env for web_search tool.
 use_plain_responses: false
 show_embed_color: true  # Show green/orange bar on bot responses (set to false to disable)
 allow_dms: true
@@ -73,10 +68,7 @@ providers:
   ollama:
     base_url: http://localhost:11434
     # api_key is optional for local Ollama, but can be set if needed
-    # web_search_provider: ollama  # override global web_search_provider for this provider only
-    #   "brave"  — use Brave API (inherits global default)
-    #   "ollama" — use Ollama's native web search instead
-    
+
   vllm:
     base_url: http://localhost:8000/v1
 
@@ -104,7 +96,7 @@ models:
   
   # Ollama model with tools support
   # ollama/qwen3:14b:
-  #   tools: ["web_search", "web_fetch", "get_temperature"]  # Optional: enable specific tools
+  #   tools: ["web_search", "visuals_core"]  # Optional: enable specific tools
   #   persona: some_persona_name  # Optional: model-specific persona
   #   think: true  # Optional: enable thinking mode (supported by reasoning models)
 

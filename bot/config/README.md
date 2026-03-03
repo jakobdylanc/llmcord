@@ -84,7 +84,6 @@ model: "ollama/qwen3:14b"
 persona: stock_market_analyst
 tools:
   - "web_search"
-  - "web_fetch"
   - "visuals_core"
 fallback_models:
   - "openrouter/openrouter/free"
@@ -110,7 +109,7 @@ think: true  # Optional: for reasoning models
 |-------|-------------|
 | `persona` | Persona file name (without extension) |
 | `system_prompt` | Override system prompt for this task |
-| `tools` | List of tools (Ollama only): `web_search`, `web_fetch`, `visuals_core` |
+| `tools` | List of tools: `web_search`, `visuals_core`, `get_market_prices` |
 | `think` | Enable reasoning mode (Ollama only) |
 | `fallback_models` | Fallback models if primary fails |
 

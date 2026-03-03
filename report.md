@@ -44,7 +44,7 @@ This report documents the development process of the `gpt-discord-bot` project. 
 - **Config**: Loader reads YAML; validator ensures providers, models, tasks, permissions. File-based tasks in `bot/config/tasks/*.yaml` override inline `scheduled_tasks`.
 - **Personas & tasks**: Personas from `bot/config/personas/`; tasks from `bot/config/tasks/` and config; APScheduler runs cron jobs.
 - **LLM**: Ollama via `OllamaService` (tool registry, skill-doc injection); OpenAI-compatible providers via `AsyncOpenAI` with optional tool-call loop. Fallback models tried on timeout/failure.
-- **Tools**: Single registry in `bot/llm/tools/registry.py`: `web_search` (Brave or Ollama native), `web_fetch` (Ollama), `visuals_core`, `get_market_prices`. Skill docs in `bot/llm/tools/skills/*.md` are injected when tools are enabled.
+- **Tools**: Single registry in `bot/llm/tools/registry.py`: `web_search` (Brave API), `visuals_core`, `get_market_prices`. Skill docs in `bot/llm/tools/skills/*.md` are injected when tools are enabled.
 - **Discord**: Errors trigger admin DM via `bot/discord/errors.notify_admin_error`; slash-command errors handled by `handle_app_command_error`.
 
 ### How to Maintain

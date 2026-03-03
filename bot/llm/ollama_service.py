@@ -7,10 +7,6 @@ All tool definitions live in bot/llm/tools/registry.py — nothing is hardcoded 
 Skill docs (bot/llm/tools/skills/*.md) are automatically loaded and injected into
 the system prompt when their corresponding tools are enabled, so the model always
 knows when and how to call each tool correctly.
-
-web_search_provider:
-  "brave"  — Bot calls Brave Search API (default, works everywhere)
-  "ollama" — Ollama server handles web_search natively
 """
 
 from __future__ import annotations
@@ -78,12 +74,9 @@ def _inject_skills(messages: List[Dict], tool_names: List[str]) -> List[Dict]:
 
 
 class OllamaService:
-    def __init__(self, host: str, web_search_provider: str = "brave"):
+    def __init__(self, host: str):
         """
-        host                — Ollama server URL
-        web_search_provider — "brave" (default) or "ollama"
-                              Brave works regardless of model; Ollama native requires
-                              a model that supports Ollama's built-in web search.
+        host — Ollama server URL
         """
         load_dotenv()
 
@@ -91,10 +84,7 @@ class OllamaService:
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self.client = Client(host=host, headers=headers)
 
-        self._registry = build_tool_registry(
-            ollama_client=self.client,
-            web_search_provider=web_search_provider,
-        )
+        self._registry = build_tool_registry()
 
     # ── Main Chat Runner ────────────────────────────────────────────────────
 
