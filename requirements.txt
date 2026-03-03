@@ -2,3 +2,10 @@ discord.py>=2.6.0
 httpx
 openai
 pyyaml
+apscheduler>=3.10.0
+ollama
+python-dotenv
+typing_extensions
+rich
+requests
+yfinance

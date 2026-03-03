@@ -1,0 +1,11 @@
+name: sample-task
+enabled: false
+cron: "30 0 * * 1-6" # (cron expression for when the task should run, e.g. "30 0 * * 1-6" means every day at 12:30 AM from Monday to Saturday)
+user_id|channel_id: 1234567890 # (discord user id or channel id where the task will run)
+model: google/gemini-2.5-flash # (LLM model to use for this task)
+fallback_models: [google/gemini-3-flash] # (optional, list of fallback models to use if the primary model fails)
+prompt: "Let's take a look at the key movements in Taiwan and US markets" # (the prompt to use for the LLM when this task runs)
+tools: # (optional, list of tools to use for this task, e.g. web search, get market prices, etc.)
+  - "get_market_prices"
+  - "web_search"
+persona: stock_market_analyst # (optional, the persona to use for this task, e.g. stock market analyst, news reporter, etc.)

@@ -1,0 +1,38 @@
+# Tool Registry
+# Define all available tools here. Each tool will be available to all providers/models.
+# To add a new tool:
+# 1. Implement the handler function in bot/llm/tools/
+# 2. Add an entry below with name, description, parameters, and handler path
+
+---
+tools:
+  - name: web_search
+    description: "Search the web for current information"
+    parameters:
+      - name: "query"
+        type: "string"
+        description: "The search query"
+    handler: "bot.llm.tools.web_search:web_search"
+
+  - name: web_fetch
+    description: "Fetch the contents of a URL"
+    parameters:
+      - name: "url"
+        type: "string"
+        description: "The URL to fetch"
+    handler: "bot.llm.tools.web_fetch:web_fetch"
+
+  - name: visuals_core
+    description: "Generate data visualizations"
+    parameters:
+      - name: "viz_type"
+        type: "string"
+        description: "Type of visualization (e.g., 'bar', 'line', 'pie')"
+      - name: "data"
+        type: "string"
+        description: "JSON string containing data points"
+      - name: "title"
+        type: "string"
+        description: "Title for the visualization (optional)"
+        default: ""
+    handler: "bot.llm.tools.visuals_core:visuals_core"
