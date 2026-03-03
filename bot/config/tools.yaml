@@ -1,0 +1,42 @@
+# Tool Registry
+# Define all available tools here. Each tool will be available to all providers/models.
+# To add a new tool:
+# 1. Implement the handler function in bot/llm/tools/
+# 2. Add an entry below with name, description, parameters, and handler path
+
+---
+tools:
+  - name: web_search
+    description: "Search the web for current information"
+    parameters:
+      - name: "query"
+        type: "string"
+        description: "The search query"
+    handler: "bot.llm.tools.web_search:brave_web_search"
+
+  - name: visuals_core
+    description: "Generate data visualizations"
+    parameters:
+      - name: "viz_type"
+        type: "string"
+        description: "Type of visualization (e.g., 'bar', 'line', 'pie')"
+      - name: "data"
+        type: "string"
+        description: "JSON string containing data points"
+      - name: "title"
+        type: "string"
+        description: "Title for the visualization (optional)"
+        default: ""
+    handler: "bot.llm.tools.visuals_core:visuals_core"
+
+  - name: get_market_prices
+    description: "Fetch closing prices and daily % change for stock indices or tickers from Yahoo Finance"
+    parameters:
+      - name: "tickers"
+        type: "string"
+        description: "Comma-separated Yahoo Finance ticker symbols (e.g. ^TWII,^GSPC,0050.TW)"
+      - name: "days"
+        type: "integer"
+        description: "Calendar days of history to fetch (default 5)"
+        default: 5
+    handler: "bot.llm.tools.yahoo_finance:get_market_prices"

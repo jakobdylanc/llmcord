@@ -1,6 +1,7 @@
 services:
   container:
     build: .
+    container_name: gpt-discord-bot
     network_mode: host
     restart: unless-stopped
     volumes:

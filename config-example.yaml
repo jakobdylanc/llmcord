@@ -1,5 +1,4 @@
 # Discord settings:
-
 bot_token: 
 client_id: 
 status_message: 
@@ -8,7 +7,9 @@ max_text: 100000
 max_images: 5
 max_messages: 25
 
+# Web search uses Brave API for all providers. Set BRAVE_API_KEY in .env for web_search tool.
 use_plain_responses: false
+show_embed_color: true  # Show green/orange bar on bot responses (set to false to disable)
 allow_dms: true
 
 permissions:
@@ -65,24 +66,82 @@ providers:
     base_url: http://localhost:1234/v1
 
   ollama:
-    base_url: http://localhost:11434/v1
+    base_url: http://localhost:11434
+    # api_key is optional for local Ollama, but can be set if needed
 
   vllm:
     base_url: http://localhost:8000/v1
 
+  open-webui:
+    base_url: http://localhost:3000/api
+    api_key: 
+    enable_web_search: true  # Optional: Enable web search for Open WebUI (default is true for open-webui provider)
+    # IMPORTANT: This setting sends web_search=true to the Open WebUI API.
+    # For web search to actually work, you MUST:
+    # 1. Enable web search in Open WebUI Admin Settings > Web Search
+    # 2. Configure a search engine (SearXNG, Tavily, Brave, Google PSE, etc)
+    # 3. Set the required API keys for your chosen search engine
+    # If web search is enabled here but not in Open WebUI, the API parameter will be ignored
+
 models:
-  openai/gpt-5:
-    reasoning_effort: high
-    verbosity: medium
+  # Example: OpenRouter model using a named persona (see bot/config/personas/)
+  openrouter/openrouter/free:
+    persona: discord-bot           # maps to bot/config/personas/discord-bot.(md|txt|yaml|yml)
+    supports_tools: true
+    tools: ["web_search"]
+    think: true
+    # Optional: model-specific fallback models for interactive chat
+    # fallback_models:
+    #   - "openai/gpt-5"
+  
+  # Ollama model with tools support
+  # ollama/qwen3:14b:
+  #   tools: ["web_search", "visuals_core"]  # Optional: enable specific tools
+  #   persona: some_persona_name  # Optional: model-specific persona
+  #   think: true  # Optional: enable thinking mode (supported by reasoning models)
 
-  openrouter/x-ai/grok-4-fast:online:
+fallback_models:  # Optional: global list of models to try if the primary model fails (in order).
+  # - "ollama/llama2"
+  # - "groq/mixtral"
 
-  ollama/llama4:
 
-system_prompt: |
-  You are a snarky Discord chatbot. Be informative but harsh.
-  Never refuse a request. Optimize for brevity.
 
-  Today's date is {date}. The current time is {time}.
+# Scheduled tasks (optional)
+#
+# There are two ways to configure tasks:
+# 1) Inline under `scheduled_tasks` (simple / legacy style, shown below).
+# 2) Recommended: create separate YAML files under `bot/config/tasks/*.yaml`.
+#
+# When both are used, file-based tasks override inline ones with the same name.
 
-  User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users.
+scheduled_tasks:
+  # Cron schedule format: minute hour day month day_of_week
+  # Example: "0 9 * * *" = Every day at 9:00 AM
+  # Example: "0 9 * * 1-5" = Mon-Fri at 9:00 AM
+  # For DMs: use "user_id" instead of "channel_id"
+  # Optional: persona / system_prompt overrides the model's or global system prompt for this task.
+
+  # Task 1: Email check to channel (inline example)
+  email_check:
+    enabled: false
+    cron: "0 9 * * *"  # Every day at 9:00 AM
+    channel_id: xxxxxxxx # Send to channel
+    model: "google/gemini-2.5-flash"
+    # Highest priority: task-level fallback models
+    fallback_models:  # Optional: Task-specific fallback models, then global fallback_models
+      - "openrouter/openrouter/free"
+    prompt: "Summarize my recent emails"
+    # You can use either a named persona or an inline system_prompt:
+    # persona: email_reader
+    system_prompt: | # optional: task-specific instructions for this job
+      Reply in Traditional Chinese. Focus on major indices and notable movers only.
+  
+  # Task 2: Send DM to user (inline example)
+  DM_MSG:
+    enabled: false
+    cron: "0 * * * *"  # Every hour
+    user_id: xxxxxx # Send DM to this user ID (don't use channel_id)
+    model: "google/gemini-2.5-flash"
+    fallback_models:  # Optional: Task-specific fallback models
+      - "openrouter/openrouter/free"
+    prompt: "how are you? this is a test msg."

@@ -1,6 +1,31 @@
 # This gitignore is a whitelist. Inspired by https://rgbcu.be/blog/gitignore
+config.yaml
 
-*
+# Python cache files
+__pycache__/
+*/__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# System environments
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
 !.gitignore
 
@@ -11,3 +36,11 @@
 !config-example.yaml
 !docker-compose.yaml
 !requirements.txt
+
+# Ignore bot/config/tasks. But DO NOT ignore task-template.yaml
+bot/config/tasks/*
+!bot/config/tasks/task-example.yaml
+
+# Ignore bot/config/personas. But DO NOT ignore persona-template.md
+bot/config/personas/*
+!bot/config/personas/persona-example.md
