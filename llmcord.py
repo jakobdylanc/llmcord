@@ -980,7 +980,7 @@ async def run_scheduled_task(task_name: str, task_config: dict[str, Any]) -> Non
                     logging.warning(f"Task '{task_name}': {'primary' if ai == 0 else f'fallback [{ai}]'} failed: {parse_error_message(e)}")
                     if ai == len(models_to_try) - 1: raise
 
-        max_send = 4096
+        max_send = 2000  # Discord limit
         if response_text:
             for i in range(0, len(response_text), max_send):
                 try:

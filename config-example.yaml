@@ -145,3 +145,12 @@ scheduled_tasks:
     fallback_models:  # Optional: Task-specific fallback models
       - "openrouter/openrouter/free"
     prompt: "how are you? this is a test msg."
+
+
+tools:
+  # Google Tools (Gmail + Calendar) - requires credentials.json from Google Cloud Console
+  # Get credentials: https://console.cloud.google.com/apis/credentials
+  google_tools:
+    default_calendar_entries: 10
+    default_email_entries: 10
+    path_to_credentials: "credentials.json"  # OAuth client secrets file

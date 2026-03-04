@@ -11,9 +11,13 @@ bot/llm/tools/
 ├── registry.py            ← single source of truth: ToolEntry registry
 ├── web_search.py          ← web_search (Brave API) callable + schema
 ├── visuals_core.py        ← visuals_core callable + schema
+├── yahoo_finance.py       ← stock/index prices from Yahoo Finance
+├── google_tools.py        ← Gmail + Calendar (Google API)
 └── skills/
-    ├── web_search.md      ← OpenClaw skill doc for web_search
-    └── visuals_core.md    ← OpenClaw skill doc for visuals_core
+    ├── web_search.md      ← skill doc for web_search
+    ├── visuals_core.md    ← skill doc for visuals_core
+    ├── yahoo_finance.md   ← skill doc for get_market_prices
+    └── google_tools.md    ← skill doc for google_tools
 ```
 
 ## How tools flow

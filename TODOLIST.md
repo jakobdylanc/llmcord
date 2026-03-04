@@ -24,10 +24,12 @@ Check items off as they're completed.
 - [x] Scheduled tasks with cron (`bot/config/tasks/`)
 - [x] `/model` slash command with autocomplete
 - [x] `/clear` slash command
-- [x] Streamed responses with embed color (green = complete, orange = streaming)
+- [x] Streamed responses with embed color (green = complete, orange = streamin)
 - [x] `<think>` tag stripping for reasoning models
 - [x] Admin error notifications via Discord DM
 - [x] Multi-turn tool calling for OpenAI/OpenRouter (`run_openai_with_tools` in llmcord.py; tool call → result → continue loop with Brave registry)
+- [x] Add /skill, /task, /refresh, /persona in Discord slash commands.
+- [x] Google Tools (`google_tools`) - Gmail + Calendar access with read-only OAuth scopes
 
 ---
 
@@ -36,7 +38,6 @@ Check items off as they're completed.
 - [ ] **Tool result timeout** — individual tool calls can hang;
       add per-tool timeout wrapping `entry.fn(**args)` in `OllamaService.run()`
 - [ ] **Multi Recivers support in Scheduled Task** — Support DM to user and send Message to a channel at the same time when both `user_id` and `channel_id` are gave in the task.yaml.
-- [ ] **Discord slash cmmands** — Support /skill, /task in Discord slash commands.
 
 ---
 
