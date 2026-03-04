@@ -72,6 +72,9 @@ def build_extra_body(provider_cfg: dict, model_params: Any, exclude: set[str] | 
 
 config = get_config()
 curr_model = next(iter(config["models"]))
+# Detect initial persona: model-specific > global
+model_params = config["models"].get(curr_model, {})
+curr_persona = model_params.get("persona") or config.get("persona", "")
 
 logging.info(f"🚀 Bot starting | models: {list(config['models'].keys())} | providers: {list(config['providers'].keys())}")
 
@@ -278,14 +281,34 @@ async def task_command(interaction: discord.Interaction):
     await interaction.response.send_message(response)
 
 
-@discord_bot.tree.command(name="persona", description="List available personas")
-async def persona_command(interaction: discord.Interaction):
+@discord_bot.tree.command(name="persona", description="View or switch the current persona")
+async def persona_command(interaction: discord.Interaction, persona: str) -> None:
+    global curr_persona
+    if persona == curr_persona:
+        out = f"Current persona: `{curr_persona}`"
+    elif interaction.user.id in config["permissions"]["users"]["admin_ids"]:
+        curr_persona = persona
+        out = f"Persona switched to: `{persona}`"
+        logging.info(out)
+    else:
+        out = "You don't have permission to change the persona."
+    await interaction.response.send_message(out, ephemeral=(interaction.channel.type == discord.ChannelType.private))
+
+
+@persona_command.autocomplete("persona")
+async def persona_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
     personas = list_personas()
-    if not personas:
-        await interaction.response.send_message("No personas available.")
-        return
-    response = "Available personas:\n" + "\n".join([f"- **{name}**" for name in personas])
-    await interaction.response.send_message(response)
+    # Always show current persona first if it matches
+    choices = []
+    if curr_persona and (curr_str == "" or curr_str.lower() in curr_persona.lower()):
+        choices.append(Choice(name=f"◉ {curr_persona} (current)", value=curr_persona))
+    # Filter available personas
+    if curr_str == "":
+        choices += [Choice(name=f"○ {p}", value=p) for p in personas if p != curr_persona]
+    else:
+        choices += [Choice(name=f"○ {p}", value=p) for p in personas if p and p != curr_persona and curr_str.lower() in p.lower()]
+    return choices[:25]
+
 
 # ── Events ───────────────────────────────────────────────────────────────────
 
@@ -418,7 +441,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
     logging.info(f"Message (uid:{new_msg.author.id}, att:{len(new_msg.attachments)}, len:{len(messages)}): {new_msg.content}")
 
-    # System prompt: persona > model-specific > global
+    # System prompt: model-specific > current > global
     sys_prompt = ""
     if isinstance(model_params, dict):
         persona_name = model_params.get("persona")
@@ -426,6 +449,8 @@ async def on_message(new_msg: discord.Message) -> None:
             sys_prompt = try_load_persona(persona_name) or ""
         if not sys_prompt:
             sys_prompt = model_params.get("system_prompt") or ""
+    if not sys_prompt and curr_persona:
+        sys_prompt = try_load_persona(curr_persona) or ""
     if not sys_prompt:
         global_persona = config.get("persona")
         if global_persona:
