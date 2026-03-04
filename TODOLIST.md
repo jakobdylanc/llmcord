@@ -10,7 +10,7 @@ Check items off as they're completed.
 ## ✅ Done
 
 - [x] Config loader & validator (`bot/config/loader.py`, `bot/config/validator.py`)
-- [x] Ollama provider with tool calling (`web_search`, `visuals_core`, `get_market_prices`)
+- [x] Ollama provider with tool calling
 - [x] Brave API web search for all providers (including Ollama)
 - [x] Tool schemas decoupled from tool callables — each tool file owns both
 - [x] `registry.py` as single source of truth for all tool schemas
@@ -36,11 +36,12 @@ Check items off as they're completed.
 - [ ] **Tool result timeout** — individual tool calls can hang;
       add per-tool timeout wrapping `entry.fn(**args)` in `OllamaService.run()`
 - [ ] **Multi Recivers support in Scheduled Task** — Support DM to user and send Message to a channel at the same time when both `user_id` and `channel_id` are gave in the task.yaml.
+- [ ] **Discord slash cmmands** — Support /skill, /task in Discord slash commands.
 
 ---
 
 ## 💡 Ideas / Backlog
-
+f
 - [ ] **`/tools` slash command** — list available tools and their descriptions, sourced
       from `SKILLS.md` or `registry.py` at runtime
 - [ ] **Hot-reload tools** — watch `registry.py` for changes and reload without restart
@@ -68,4 +69,3 @@ Check items off as they're completed.
 - `qwen3:14b` with `think: true` bleeds reasoning tokens into tool call JSON, causing
   Ollama to return HTTP 500. Workaround is already in place (retry without tools), but
   the model is fundamentally unreliable for tool calling. Use `qwen2.5:14b` instead.
-- Web search is Brave-only for all providers; `web_fetch` has been removed.

@@ -17,12 +17,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import yaml
 
 from bot.config.loader import get_config as load_config_with_validation
-from bot.config.personas import try_load_persona
+from bot.config.personas import try_load_persona, list_personas
 from bot.config.tasks import load_scheduled_tasks
 from bot.discord.errors import notify_admin_error as core_notify_admin_error, handle_app_command_error
 from bot.llm.errors import parse_error_message
 from bot.llm.ollama_service import OllamaService
 from bot.llm.tools import get_openai_tools, build_brave_registry, execute_tool_call
+from bot.llm.tools.registry import get_tools
 
 if os.environ.get("DEBUG"):
     logging.basicConfig(level=logging.DEBUG)
@@ -71,6 +72,9 @@ def build_extra_body(provider_cfg: dict, model_params: Any, exclude: set[str] | 
 
 config = get_config()
 curr_model = next(iter(config["models"]))
+# Detect initial persona: model-specific > global
+model_params = config["models"].get(curr_model, {})
+curr_persona = model_params.get("persona") or config.get("persona", "")
 
 logging.info(f"🚀 Bot starting | models: {list(config['models'].keys())} | providers: {list(config['providers'].keys())}")
 
@@ -220,15 +224,16 @@ async def run_openai_with_tools(
 
 @discord_bot.tree.command(name="model", description="View or switch the current model")
 async def model_command(interaction: discord.Interaction, model: str) -> None:
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
     global curr_model
     if model == curr_model:
         out = f"Current model: `{curr_model}`"
-    elif interaction.user.id in config["permissions"]["users"]["admin_ids"]:
+    else:
         curr_model = model
         out = f"Model switched to: `{model}`"
         logging.info(out)
-    else:
-        out = "You don't have permission to change the model."
     await interaction.response.send_message(out, ephemeral=(interaction.channel.type == discord.ChannelType.private))
 
 
@@ -249,10 +254,219 @@ async def model_autocomplete(interaction: discord.Interaction, curr_str: str) ->
 
 @discord_bot.tree.command(name="clear", description="Clear conversation history and cached messages")
 async def clear_command(interaction: discord.Interaction) -> None:
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
     global msg_nodes
     msg_nodes.clear()
     await interaction.response.send_message("✅ Conversation history cleared. Starting fresh!", ephemeral=(interaction.channel.type == discord.ChannelType.private))
     logging.info(f"Cache cleared by {interaction.user.id}")
+
+
+@discord_bot.tree.command(name="refresh", description="Reload config, tasks, and refresh model/persona")
+async def refresh_command(interaction: discord.Interaction) -> None:
+    global config, curr_model, curr_persona
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
+    
+    try:
+        # Reload config (updates global config)
+        config = await asyncio.to_thread(get_config)
+        
+        # Update current model (keep existing if still valid)
+        if curr_model not in config["models"]:
+            curr_model = next(iter(config["models"]))
+        
+        # Update current persona (model-specific > global)
+        model_params = config["models"].get(curr_model, {})
+        curr_persona = model_params.get("persona") or config.get("persona", "")
+        
+        # Reload scheduled tasks (uses global config)
+        setup_scheduled_tasks()
+        
+        await interaction.response.send_message("✅ Config and tasks reloaded!", ephemeral=True)
+        logging.info(f"Config reloaded by {interaction.user.id}")
+    except Exception as e:
+        logging.error(f"Reload failed: {e}")
+        await interaction.response.send_message(f"❌ Reload failed: {e}", ephemeral=True)
+
+
+@discord_bot.tree.command(name="skill", description="List available skills/tools")
+async def skill_command(interaction: discord.Interaction):
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
+    tools = get_tools()
+    if not tools:
+        await interaction.response.send_message("No skills/tools available.")
+        return
+    response = "Available skills/tools:\n" + "\n".join([f"- **{name}**: {tool.schema.get('function', {}).get('description', 'No description available')}" for name, tool in tools.items()])
+    await interaction.response.send_message(response)
+
+
+@discord_bot.tree.command(name="task", description="List activated scheduled tasks")
+async def task_command(interaction: discord.Interaction, task: str = None, action: str = None):
+    """
+    Task management:
+    - /task : show all tasks with status
+    - /task <name> : toggle task on/off
+    - /task <name> run : run task immediately
+    """
+    global config, scheduler
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
+    
+    tasks = load_scheduled_tasks(config)
+    # Get loaded jobs from scheduler
+    loaded_jobs = {job.id.replace("scheduled_task_", ""): job for job in scheduler.get_jobs() if job.id.startswith("scheduled_task_")}
+    
+    # If no task specified, show all tasks with status
+    if not task:
+        if not tasks:
+            await interaction.response.send_message("No tasks configured.")
+            return
+        
+        lines = ["**Task Status:**\n"]
+        for name, task_config in sorted(tasks.items()):
+            status = "ON" if task_config.get("enabled", False) else "OFF"
+            cron = task_config.get("cron", "no schedule")
+            lines.append(f"- **{name}**: [{status}] `{cron}`")
+        
+        lines.append("\nUse `/task <name>` to toggle, `/task <name> run` to run immediately.")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+        return
+    
+    # Check if task exists
+    if task not in tasks:
+        await interaction.response.send_message(f"Task '{task}' not found.", ephemeral=True)
+        return
+    
+    task_config = tasks[task]
+    is_enabled = task_config.get("enabled", False)
+    
+    # Handle run action
+    if action == "run":
+        await interaction.response.send_message(f"🔄 Running task '{task}'...", ephemeral=True)
+        try:
+            result = await run_scheduled_task(task, task_config)
+            if result:
+                await interaction.followup.send(content=f"**Task '{task}' result:**\n{result[:1900]}", ephemeral=True)
+            else:
+                await interaction.followup.send(content=f"✅ Task '{task}' completed (no result)", ephemeral=True)
+        except Exception as e:
+            logging.error(f"Task '{task}' failed: {e}")
+            await interaction.followup.send(content=f"❌ Task failed: {e}", ephemeral=True)
+        return
+    
+    # Toggle task (enable/disable)
+    # Find and update the task file
+    from pathlib import Path
+    TASKS_DIR = Path(__file__).parent / "bot" / "config" / "tasks"
+    task_file = None
+    # Try to find by file name first, then by YAML name field
+    for f in TASKS_DIR.glob("*.yaml"):
+        # Skip example files
+        if "example" in f.stem:
+            continue
+        data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        yaml_name = data.get("name", "")
+        # Match by file stem or YAML name
+        if f.stem.replace("-", "_") == task or yaml_name == task:
+            task_file = f
+            break
+    
+    # Toggle task (enable <-> disable)
+    new_enabled = not is_enabled
+    
+    if task_file:
+        data = yaml.safe_load(task_file.read_text(encoding="utf-8")) or {}
+        data["enabled"] = new_enabled
+        task_file.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    elif "scheduled_tasks" in config and task in config["scheduled_tasks"]:
+        config["scheduled_tasks"][task]["enabled"] = new_enabled
+    
+    if new_enabled:
+        setup_scheduled_tasks()
+        out = f"✅ Task '{task}' enabled and loaded."
+    else:
+        job_id = f"scheduled_task_{task}"
+        try:
+            scheduler.remove_job(job_id)
+        except Exception:
+            pass  # Job might not exist
+        out = f"❌ Task '{task}' disabled."
+    
+    await interaction.response.send_message(out, ephemeral=True)
+
+
+@task_command.autocomplete("task")
+async def task_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
+    global config, scheduler
+    tasks = load_scheduled_tasks(config)
+    loaded_jobs = {job.id.replace("scheduled_task_", ""): job for job in scheduler.get_jobs() if job.id.startswith("scheduled_task_")}
+    
+    if not tasks:
+        return []
+    
+    if curr_str == "":
+        # Show all tasks with ON/OFF status
+        return [
+            Choice(
+                name=f"{name} [ON]" if tasks[name].get("enabled") else f"{name} [OFF]",
+                value=name
+            )
+            for name in tasks.keys()
+        ]
+    
+    # Filter by search string
+    return [
+        Choice(
+            name=f"{name} [ON]" if tasks[name].get("enabled") else f"{name} [OFF]",
+            value=name
+        )
+        for name in tasks.keys() if curr_str.lower() in name.lower()
+    ][:25]
+
+
+@task_command.autocomplete("action")
+async def task_action_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
+    # Only show "run" as action - toggle is default when no action provided
+    actions = ["run"]
+    if curr_str == "":
+        return [Choice(name=a, value=a) for a in actions]
+    return [Choice(name=a, value=a) for a in actions if curr_str.lower() in a.lower()]
+
+
+@discord_bot.tree.command(name="persona", description="View or switch the current persona")
+async def persona_command(interaction: discord.Interaction, persona: str) -> None:
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
+    global curr_persona
+    if persona == curr_persona:
+        out = f"Current persona: `{curr_persona}`"
+    else:
+        curr_persona = persona
+        out = f"Persona switched to: `{persona}`"
+        logging.info(out)
+    await interaction.response.send_message(out, ephemeral=(interaction.channel.type == discord.ChannelType.private))
+
+
+@persona_command.autocomplete("persona")
+async def persona_autocomplete(interaction: discord.Interaction, curr_str: str) -> list[Choice[str]]:
+    personas = list_personas()
+    # Always show current persona first if it matches
+    choices = []
+    if curr_persona and (curr_str == "" or curr_str.lower() in curr_persona.lower()):
+        choices.append(Choice(name=f"◉ {curr_persona} (current)", value=curr_persona))
+    # Filter available personas
+    if curr_str == "":
+        choices += [Choice(name=f"○ {p}", value=p) for p in personas if p != curr_persona]
+    else:
+        choices += [Choice(name=f"○ {p}", value=p) for p in personas if p and p != curr_persona and curr_str.lower() in p.lower()]
+    return choices[:25]
 
 
 # ── Events ───────────────────────────────────────────────────────────────────
@@ -261,8 +475,11 @@ async def clear_command(interaction: discord.Interaction) -> None:
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
         logging.info(f"\n\nBOT INVITE URL:\nhttps://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot\n")
+    # Sync to all guilds
     await discord_bot.tree.sync()
-    logging.info(f"Synced {len(discord_bot.tree._get_all_commands())} slash commands")
+    # Log all registered commands
+    commands = discord_bot.tree._get_all_commands()
+    logging.info(f"Synced {len(commands)} slash commands: {[c.name for c in commands]}")
     if not scheduler.running:
         scheduler.start()
         setup_scheduled_tasks()
@@ -386,7 +603,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
     logging.info(f"Message (uid:{new_msg.author.id}, att:{len(new_msg.attachments)}, len:{len(messages)}): {new_msg.content}")
 
-    # System prompt: persona > model-specific > global
+    # System prompt: model-specific > current > global
     sys_prompt = ""
     if isinstance(model_params, dict):
         persona_name = model_params.get("persona")
@@ -394,6 +611,8 @@ async def on_message(new_msg: discord.Message) -> None:
             sys_prompt = try_load_persona(persona_name) or ""
         if not sys_prompt:
             sys_prompt = model_params.get("system_prompt") or ""
+    if not sys_prompt and curr_persona:
+        sys_prompt = try_load_persona(curr_persona) or ""
     if not sys_prompt:
         global_persona = config.get("persona")
         if global_persona:

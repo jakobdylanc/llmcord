@@ -28,3 +28,15 @@ tools:
         description: "Title for the visualization (optional)"
         default: ""
     handler: "bot.llm.tools.visuals_core:visuals_core"
+
+  - name: get_market_prices
+    description: "Fetch closing prices and daily % change for stock indices or tickers from Yahoo Finance"
+    parameters:
+      - name: "tickers"
+        type: "string"
+        description: "Comma-separated Yahoo Finance ticker symbols (e.g. ^TWII,^GSPC,0050.TW)"
+      - name: "days"
+        type: "integer"
+        description: "Calendar days of history to fetch (default 5)"
+        default: 5
+    handler: "bot.llm.tools.yahoo_finance:get_market_prices"
