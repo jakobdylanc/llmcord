@@ -26,7 +26,7 @@ def _read_yaml_prompt(path: Path) -> str:
 
 def load_persona(name: str) -> str:
     """
-    Load a persona (人格設定檔) by name.
+    Load a persona by name.
 
     Looks for, in order:
     - <name>.md
