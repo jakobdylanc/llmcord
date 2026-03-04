@@ -224,15 +224,16 @@ async def run_openai_with_tools(
 
 @discord_bot.tree.command(name="model", description="View or switch the current model")
 async def model_command(interaction: discord.Interaction, model: str) -> None:
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
     global curr_model
     if model == curr_model:
         out = f"Current model: `{curr_model}`"
-    elif interaction.user.id in config["permissions"]["users"]["admin_ids"]:
+    else:
         curr_model = model
         out = f"Model switched to: `{model}`"
         logging.info(out)
-    else:
-        out = "You don't have permission to change the model."
     await interaction.response.send_message(out, ephemeral=(interaction.channel.type == discord.ChannelType.private))
 
 
@@ -253,14 +254,49 @@ async def model_autocomplete(interaction: discord.Interaction, curr_str: str) ->
 
 @discord_bot.tree.command(name="clear", description="Clear conversation history and cached messages")
 async def clear_command(interaction: discord.Interaction) -> None:
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
     global msg_nodes
     msg_nodes.clear()
     await interaction.response.send_message("✅ Conversation history cleared. Starting fresh!", ephemeral=(interaction.channel.type == discord.ChannelType.private))
     logging.info(f"Cache cleared by {interaction.user.id}")
 
 
+@discord_bot.tree.command(name="refresh", description="Reload config, tasks, and refresh model/persona")
+async def refresh_command(interaction: discord.Interaction) -> None:
+    global config, curr_model, curr_persona
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
+    
+    try:
+        # Reload config (updates global config)
+        config = await asyncio.to_thread(get_config)
+        
+        # Update current model (keep existing if still valid)
+        if curr_model not in config["models"]:
+            curr_model = next(iter(config["models"]))
+        
+        # Update current persona (model-specific > global)
+        model_params = config["models"].get(curr_model, {})
+        curr_persona = model_params.get("persona") or config.get("persona", "")
+        
+        # Reload scheduled tasks (uses global config)
+        setup_scheduled_tasks()
+        
+        await interaction.response.send_message("✅ Config and tasks reloaded!", ephemeral=True)
+        logging.info(f"Config reloaded by {interaction.user.id}")
+    except Exception as e:
+        logging.error(f"Reload failed: {e}")
+        await interaction.response.send_message(f"❌ Reload failed: {e}", ephemeral=True)
+
+
 @discord_bot.tree.command(name="skill", description="List available skills/tools")
 async def skill_command(interaction: discord.Interaction):
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
     tools = get_tools()
     if not tools:
         await interaction.response.send_message("No skills/tools available.")
@@ -271,6 +307,9 @@ async def skill_command(interaction: discord.Interaction):
 
 @discord_bot.tree.command(name="task", description="List activated scheduled tasks")
 async def task_command(interaction: discord.Interaction):
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
     tasks = load_scheduled_tasks(config)
     # Filter to only enabled tasks
     enabled_tasks = [t for t in tasks.values() if t.get("enabled", True)]
@@ -283,15 +322,16 @@ async def task_command(interaction: discord.Interaction):
 
 @discord_bot.tree.command(name="persona", description="View or switch the current persona")
 async def persona_command(interaction: discord.Interaction, persona: str) -> None:
+    if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
+        await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+        return
     global curr_persona
     if persona == curr_persona:
         out = f"Current persona: `{curr_persona}`"
-    elif interaction.user.id in config["permissions"]["users"]["admin_ids"]:
+    else:
         curr_persona = persona
         out = f"Persona switched to: `{persona}`"
         logging.info(out)
-    else:
-        out = "You don't have permission to change the persona."
     await interaction.response.send_message(out, ephemeral=(interaction.channel.type == discord.ChannelType.private))
 
 
@@ -316,8 +356,11 @@ async def persona_autocomplete(interaction: discord.Interaction, curr_str: str) 
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
         logging.info(f"\n\nBOT INVITE URL:\nhttps://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot\n")
+    # Sync to all guilds
     await discord_bot.tree.sync()
-    logging.info(f"Synced {len(discord_bot.tree._get_all_commands())} slash commands")
+    # Log all registered commands
+    commands = discord_bot.tree._get_all_commands()
+    logging.info(f"Synced {len(commands)} slash commands: {[c.name for c in commands]}")
     if not scheduler.running:
         scheduler.start()
         setup_scheduled_tasks()
