@@ -40,3 +40,27 @@ tools:
         description: "Calendar days of history to fetch (default 5)"
         default: 5
     handler: "bot.llm.tools.yahoo_finance:get_market_prices"
+
+  - name: google_tools
+    description: "Access Gmail emails and Google Calendar events (read-only). Requires OAuth credentials."
+    parameters:
+      - name: "action"
+        type: "string"
+        description: "Action to perform: 'get_emails', 'get_email_content', or 'get_events'"
+      - name: "count"
+        type: "integer"
+        description: "Number of items to fetch (default: 10, max: 50)"
+        default: 10
+      - name: "label_id"
+        type: "string"
+        description: "Gmail label for get_emails: INBOX, UNREAD, STARRED, SENT, IMPORTANT"
+        default: "INBOX"
+      - name: "message_id"
+        type: "string"
+        description: "Gmail message ID (required for get_email_content)"
+        default: ""
+      - name: "calendar_id"
+        type: "string"
+        description: "Calendar ID for get_events (default: primary)"
+        default: "primary"
+    handler: "bot.llm.tools.google_tools:google_tools_wrapper"
