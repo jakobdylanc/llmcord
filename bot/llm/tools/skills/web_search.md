@@ -1,13 +1,12 @@
 ---
 name: web_search
-description: Search the web and fetch URLs via Ollama's native web_search and web_fetch tools.
-metadata: {"clawhub":{"emoji":"🌐","requires":{"provider":"ollama"},"tools":["web_search","web_fetch"]}}
+description: Search the web for current information via Brave Search API.
+metadata: {"clawhub":{"emoji":"🌐","tools":["web_search"]}}
 ---
 
-# web_search / web_fetch
+# web_search
 
-Use these tools to retrieve current information from the internet.
-Both are Ollama-native — the Ollama server handles the actual HTTP request.
+Use this tool to retrieve current information from the internet. The bot uses the Brave Search API.
 
 ## When to use web_search
 
@@ -15,41 +14,26 @@ Both are Ollama-native — the Ollama server handles the actual HTTP request.
 - The answer may have changed since your training cutoff
 - You need to verify a fact you're not confident about
 
-## When to use web_fetch
-
-- User provides a specific URL and wants its content
-- A web_search result returned a URL you need to read in full
-
-## Tool signatures
+## Tool signature
 
 ```
-web_search(query: str) -> WebSearchResponse
-web_fetch(url: str) -> WebFetchResponse
+web_search(query: str)
 ```
 
 ## Usage examples
 
-Search for recent news:
 ```
 web_search(query="台北今日天氣預報")
 web_search(query="Bitcoin price today")
 ```
 
-Fetch a specific page:
-```
-web_fetch(url="https://example.com/article")
-```
-
 ## Result handling
 
-- **web_search**: returns a list of results, each with `title`, `url`, `content`
-- **web_fetch**: returns `title`, `content`, and `links`
+- Returns a list of results, each with `title`, `url`, and snippet content
 - Extract only the facts the user asked for — do NOT summarize what the website is
 - Do NOT describe the source or tool used in your reply
 
 ## Notes
 
-- Only works with Ollama provider — not available for OpenAI/OpenRouter models
+- Works with all providers (Ollama, OpenAI, OpenRouter, etc.). Requires BRAVE_API_KEY in .env.
 - Search results may be in English even for Chinese queries; translate as needed
-- `web_fetch` on large pages will be truncated to `max_tool_chars` (default 8000)
-- Confirm before acting on fetched data (e.g. sending email based on calendar page)

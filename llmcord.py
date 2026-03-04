@@ -105,9 +105,7 @@ async def notify_admin_error(error: Exception, context: str = "") -> None:
 
 
 async def run_ollama(provider_cfg: dict, model: str, model_params: Any, messages: list) -> dict:
-    # Provider-level setting overrides global; global defaults to "brave"
-    web_search_provider = provider_cfg.get("web_search_provider") or config.get("web_search_provider", "brave")
-    ollama_service = OllamaService(host=provider_cfg["base_url"], web_search_provider=web_search_provider)
+    ollama_service = OllamaService(host=provider_cfg["base_url"])
     tools = (model_params or {}).get("tools", []) if isinstance(model_params, dict) else []
     think = (model_params or {}).get("think", False) if isinstance(model_params, dict) else False
     ollama_messages = []

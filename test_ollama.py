@@ -14,7 +14,7 @@ messages = [
 result = service.run(
     messages=messages,
     model="qwen3:14b",
-    enable_tools=["web_search", "web_fetch"],
+    enable_tools=["web_search"],
     think=True
 )
 

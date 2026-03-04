@@ -3,7 +3,7 @@ bot/llm/tools/yahoo_finance.py
 
 Fetch closing prices and basic info from Yahoo Finance via the yfinance library.
 Works with any LLM provider (Gemini, OpenAI, OpenRouter, Ollama, etc.) — 
-data is fetched bot-side, no web_fetch or browser needed.
+data is fetched bot-side, no browser needed.
 
 Entry point: get_market_prices(tickers, days) -> str
 """

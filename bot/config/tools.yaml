@@ -12,15 +12,7 @@ tools:
       - name: "query"
         type: "string"
         description: "The search query"
-    handler: "bot.llm.tools.web_search:web_search"
-
-  - name: web_fetch
-    description: "Fetch the contents of a URL"
-    parameters:
-      - name: "url"
-        type: "string"
-        description: "The URL to fetch"
-    handler: "bot.llm.tools.web_fetch:web_fetch"
+    handler: "bot.llm.tools.web_search:brave_web_search"
 
   - name: visuals_core
     description: "Generate data visualizations"

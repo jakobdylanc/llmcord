@@ -9,10 +9,10 @@ with the callable + schema, and one `skills/*.md` file with the AI-readable skil
 bot/llm/tools/
 ├── README.md              ← you are here (architecture + how to add tools)
 ├── registry.py            ← single source of truth: ToolEntry registry
-├── web_search.py          ← web_search + web_fetch callable + schema
+├── web_search.py          ← web_search (Brave API) callable + schema
 ├── visuals_core.py        ← visuals_core callable + schema
 └── skills/
-    ├── web_search.md      ← OpenClaw skill doc for web_search / web_fetch
+    ├── web_search.md      ← OpenClaw skill doc for web_search
     └── visuals_core.md    ← OpenClaw skill doc for visuals_core
 ```
 
@@ -28,8 +28,8 @@ registry.py  _ENTRIES["web_search"]  ←── ToolEntry(schema, fn, formatter)
         └── .formatter ► formats raw result before sending back as tool message
 ```
 
-`ollama_service.py` calls `build_tool_registry(client)` — it has **zero hardcoded
-tool names**. Adding a tool never requires touching it.
+`ollama_service.py` calls `build_tool_registry()` — it has **zero hardcoded
+tool names**. Web search uses Brave API for all providers. Adding a tool never requires touching it.
 
 ## How to add a new tool
 
@@ -97,6 +97,4 @@ class ToolEntry:
     formatter: Callable | None = None  # optional: formatter(result, args) -> str
 ```
 
-- `fn=None` is used for Ollama-native tools (web_search, web_fetch) whose fn is
-  bound to an Ollama Client at runtime by `build_tool_registry(client)`.
 - If `formatter` is None, results are cast via `str()`.

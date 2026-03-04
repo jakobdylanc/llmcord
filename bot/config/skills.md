@@ -2,15 +2,9 @@
 
 ## Web Search
 **Name:** `web_search`
-**Description:** Search the web for current information.
+**Description:** Search the web for current information (Brave API).
 **Parameters:**
 - `query` (string): The search query
-
-## Web Fetch
-**Name:** `web_fetch`
-**Description:** Fetch the contents of a URL.
-**Parameters:**
-- `url` (string): The URL to fetch
 
 ## Visualization Core
 **Name:** `visuals_core`

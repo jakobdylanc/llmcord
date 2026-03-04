@@ -14,7 +14,7 @@ This file is the skill index for the bot. Each tool has its own skill doc under
 
 | Skill | File | Provider | Description |
 |-------|------|----------|-------------|
-| 🌐 `web_search` / `web_fetch` | [`skills/web_search.md`](bot/llm/tools/skills/web_search.md) | Ollama | Search the web and fetch URLs |
+| 🌐 `web_search` | [`skills/web_search.md`](bot/llm/tools/skills/web_search.md) | Any | Search the web (Brave API) |
 | 📊 `visuals_core` | [`skills/visuals_core.md`](bot/llm/tools/skills/visuals_core.md) | Any | ASCII/Markdown charts, tables, timelines |
 
 ## Using skills in config.yaml
@@ -22,7 +22,7 @@ This file is the skill index for the bot. Each tool has its own skill doc under
 ```yaml
 models:
   ollama/qwen3:14b:
-    tools: ["web_search", "web_fetch", "visuals_core"]
+    tools: ["web_search", "visuals_core"]
 ```
 
 Tool names must match keys in `bot/llm/tools/registry.py`.

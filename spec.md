@@ -53,11 +53,11 @@ flowchart LR
 
 ### **bot/llm/**
 - `ollama_service.py`: Ollama LLM runner with tool-calling.
-  - Description: Builds tool registry (Brave or Ollama native), injects skill docs from `bot/llm/tools/skills/*.md`, runs chat with optional tools.
+  - Description: Builds tool registry (Brave for web_search), injects skill docs from `bot/llm/tools/skills/*.md`, runs chat with optional tools.
 
 - **tools/**:
   - `registry.py`: Single source of truth for all tools (ToolEntry, build_tool_registry, execute_tool_call).
-  - `web_search.py`: Brave Search API and Ollama-native web_search/web_fetch; schemas and formatters.
+  - `web_search.py`: Brave Search API for web_search; schema and formatter.
   - `visuals_core.py`: ASCII/Markdown visualizations (table, chart, heatmap, timeline, flowchart, tree).
   - `yahoo_finance.py`: Yahoo Finance closing prices via yfinance.
   - `skills/`: OpenClaw-format skill docs (e.g. `web_search.md`, `visuals_core.md`) injected into system prompt when tools are enabled.
@@ -90,18 +90,17 @@ flowchart LR
 | **bot/llm/errors.py** | `parse_error_message(error)` | Short admin-facing error message. |
 | | `format_user_friendly_error(error)` | Short user-facing (zh-TW) message. |
 | | `error_messages(error)` | Returns (admin_message, user_message). |
-| **bot/llm/ollama_service.py** | `OllamaService(host, web_search_provider)` | Client for Ollama; builds tool registry (Brave or Ollama native). |
+| **bot/llm/ollama_service.py** | `OllamaService(host)` | Client for Ollama; builds tool registry (Brave for web_search). |
 | | `OllamaService.run(messages, model, enable_tools, think, max_tool_chars)` | Chat with optional tools; injects skill docs; returns content, thinking, tool_results, messages. |
 | **bot/llm/tools/registry.py** | `ToolEntry` (dataclass) | schema, fn, formatter. |
-| | `build_tool_registry(ollama_client, web_search_provider)` | Full registry; wires web_search/web_fetch to Brave or Ollama. |
-| | `build_brave_registry()` | Registry with Brave web search only (for OpenAI/OpenRouter). |
+| | `build_tool_registry()` | Full registry; web_search uses Brave API. |
+| | `build_brave_registry()` | Alias for build_tool_registry() (Brave web search). |
 | | `get_openai_tools(tool_names)` | Return OpenAI-format tool schemas for given names. |
 | | `execute_tool_call(name, args, registry, max_chars)` | Run tool by name, return formatted string. |
 | | `format_tool_result(entry, result, args)` | Format via entry.formatter or str(). |
 | **bot/llm/tools/web_search.py** | `brave_web_search(query)` | Call Brave Search API; rate-limited (1 req/s). |
 | | `format_brave_results(result, user_search)` | Format Brave JSON for model. |
-| | `format_web_search_results(results, user_search)` | Format Ollama or Brave response. |
-| | `WEB_SEARCH_SCHEMA`, `WEB_FETCH_SCHEMA` | OpenAI-format tool schemas. |
+| | `WEB_SEARCH_SCHEMA` | OpenAI-format tool schema. |
 | **bot/llm/tools/visuals_core.py** | `generate_visualization(viz_type, title, **kwargs)` | Dispatch to table/chart/heatmap/timeline/flowchart/tree. |
 | | `VISUALS_CORE_SCHEMA` | OpenAI-format tool schema. |
 | **bot/llm/tools/yahoo_finance.py** | `get_market_prices(tickers, days)` | Fetch closing prices from Yahoo Finance; returns formatted string. |
@@ -122,9 +121,9 @@ flowchart LR
 
 ## API Definitions (External Services)
 
-- **Brave Search API**: `GET https://api.search.brave.com/res/v1/web/search` with query `q`, `count`; header `X-Subscription-Token` (or `Accept`, `Accept-Encoding`). Returns JSON with `web.results[]` (title, url, description). Used when `web_search_provider: brave`; requires `BRAVE_API_KEY` in `.env`. Free tier: ~1 req/s (bot enforces via lock + sleep).
+- **Brave Search API**: `GET https://api.search.brave.com/res/v1/web/search` with query `q`, `count`; header `X-Subscription-Token` (or `Accept`, `Accept-Encoding`). Returns JSON with `web.results[]` (title, url, description). Used for `web_search` tool by all providers; requires `BRAVE_API_KEY` in `.env`. Free tier: ~1 req/s (bot enforces via lock + sleep).
 
-- **Ollama**: Chat and tool endpoints on provider `base_url` (e.g. `http://localhost:11434`). Supports `chat` with `tools` (OpenAI-format schemas), optional `web_search`/`web_fetch` when using Ollama native. Optional `OLLAMA_API_KEY` in `.env` for remote instances.
+- **Ollama**: Chat and tool endpoints on provider `base_url` (e.g. `http://localhost:11434`). Supports `chat` with `tools` (OpenAI-format schemas). Web search is executed bot-side via Brave API. Optional `OLLAMA_API_KEY` in `.env` for remote instances.
 
 - **OpenAI-compatible APIs**: `client.chat.completions.create(model, messages, tools?, stream?, extra_headers?, extra_query?, extra_body?)`. Tool calls return `tool_calls`; bot executes tools locally and appends `role: "tool"` messages. Used for OpenRouter, OpenAI, xAI, Groq, etc.
 

@@ -86,10 +86,11 @@ Tools are executed **bot-side**. Any model from any provider (OpenAI, OpenRouter
 
 | Tool | Description |
 |------|-------------|
-| `web_search` | Search the web (Brave API by default, Ollama native optional) |
-| `web_fetch` | Fetch the contents of a URL (Ollama native) |
+| `web_search` | Search the web (Brave API; works with all providers) |
 | `visuals_core` | Generate ASCII/Markdown charts, tables, timelines, trees |
 | `get_market_prices` | Yahoo Finance closing prices for tickers |
+
+Web search uses the Brave API for all providers. Set `BRAVE_API_KEY` in `.env` to enable `web_search`.
 
 Enable tools per model in `config.yaml`:
 
@@ -99,31 +100,8 @@ models:
     tools: ["web_search", "visuals_core"]
 
   ollama/qwen3:14b:
-    tools: ["web_search", "web_fetch", "visuals_core"]
+    tools: ["web_search", "visuals_core"]
     think: true
-```
-
-#### Web search backends
-
-Set globally in `config.yaml`:
-
-```yaml
-web_search_provider: brave   # default — works with ALL providers
-# web_search_provider: ollama  # Ollama native only, requires compatible model
-```
-
-| Provider | Works with | Requires |
-|----------|-----------|---------|
-| `brave` (default) | OpenAI, OpenRouter, Ollama, any | `BRAVE_API_KEY` in `.env` |
-| `ollama` | Ollama only | Ollama model with native web search |
-
-You can override per-provider:
-
-```yaml
-providers:
-  ollama:
-    base_url: http://localhost:11434
-    web_search_provider: ollama  # override for this provider only
 ```
 
 #### Skill docs
@@ -221,7 +199,6 @@ Resets conversation history and message cache. Useful when switching models or s
 
 | Setting | Description |
 |---------|-------------|
-| `web_search_provider` | `brave` (default, all providers) or `ollama` (Ollama native only). |
 | `providers` | LLM providers with `base_url` and optional `api_key`. |
 | `models` | Models in `provider/model: params` format. First model is the startup default. |
 | `fallback_models` | Global fallback list tried when primary model fails. |
@@ -239,7 +216,7 @@ models:
       - "ollama/qwen3:14b"
 
   ollama/qwen3:14b:
-    tools: ["web_search", "web_fetch", "visuals_core"]
+    tools: ["web_search", "visuals_core"]
     think: true                     # enable reasoning mode
     system_prompt: "You are helpful."
 ```
@@ -262,8 +239,6 @@ models:
 - **Thinking tags:** `<think>` blocks are automatically stripped from all responses — users only see the final answer.
 
 - **Tool call parse errors (Ollama):** Models like `qwen3:14b` with `think: true` can bleed reasoning tokens into tool JSON. The bot automatically retries without tools in this case. Use `qwen2.5:14b` or `llama3.1` for reliable tool calling.
-
-- **`web_fetch` with Brave provider:** `web_fetch` always uses Ollama native (Brave has no URL-fetch API). If using `web_search_provider: brave` without an Ollama client, `web_fetch` will be unavailable.
 
 - Only OpenAI API and xAI API are user-identity aware (support the `name` message field).
 
