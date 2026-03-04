@@ -143,7 +143,7 @@ Resets conversation history and message cache. Useful when switching models or s
 | `/model` | Switch to a different model | ✓ |
 | `/persona` | View or switch the current persona | ✓ |
 | `/skill` | List available skills/tools | ✓ |
-| `/task` | List activated scheduled tasks | ✓ |
+| `/task` | List tasks, toggle on/off, or run immediately | ✓ |
 | `/clear` | Reset conversation history | ✓ |
 | `/refresh` | Reload config, tasks, model, and persona | ✓ |
 
