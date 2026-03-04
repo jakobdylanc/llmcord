@@ -1,6 +1,4 @@
 """
-bot/llm/tools/yahoo_finance.py
-
 Fetch closing prices and basic info from Yahoo Finance via the yfinance library.
 Works with any LLM provider (Gemini, OpenAI, OpenRouter, Ollama, etc.) — 
 data is fetched bot-side, no browser needed.
@@ -84,9 +82,6 @@ YAHOO_FINANCE_SCHEMA = {
         "description": (
             "Fetch accurate closing prices and daily % change for stock indices or tickers "
             "from Yahoo Finance. Use this for any market data question — it returns real numbers. "
-            "Common tickers: ^TWII (台灣加權指數), ^GSPC (S&P 500), ^IXIC (Nasdaq), "
-            "^SOX (費半/SOX), 0050.TW (元大台灣50), TSMC (台積電 ADR), "
-            "^DJI (道瓊), ^VIX (恐慌指數)."
         ),
         "parameters": {
             "type": "object",

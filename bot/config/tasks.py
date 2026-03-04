@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 import yaml
 
+from bot.config.loader import get_config
 
 TASKS_DIR = Path(__file__).parent / "tasks"
 
@@ -33,4 +34,9 @@ def load_scheduled_tasks(config: dict[str, Any]) -> Dict[str, dict[str, Any]]:
             tasks[name] = data
 
     return tasks
+
+
+def load_tasks() -> list[dict]:
+    """Wrapper for load_scheduled_tasks that uses default config"""
+    return load_scheduled_tasks(get_config())
 

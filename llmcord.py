@@ -17,12 +17,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import yaml
 
 from bot.config.loader import get_config as load_config_with_validation
-from bot.config.personas import try_load_persona
+from bot.config.personas import try_load_persona, list_personas
 from bot.config.tasks import load_scheduled_tasks
 from bot.discord.errors import notify_admin_error as core_notify_admin_error, handle_app_command_error
 from bot.llm.errors import parse_error_message
 from bot.llm.ollama_service import OllamaService
 from bot.llm.tools import get_openai_tools, build_brave_registry, execute_tool_call
+from bot.llm.tools.registry import get_tools
 
 if os.environ.get("DEBUG"):
     logging.basicConfig(level=logging.DEBUG)
@@ -254,6 +255,35 @@ async def clear_command(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("✅ Conversation history cleared. Starting fresh!", ephemeral=(interaction.channel.type == discord.ChannelType.private))
     logging.info(f"Cache cleared by {interaction.user.id}")
 
+
+@discord_bot.tree.command(name="skill", description="List available skills/tools")
+async def skill_command(interaction: discord.Interaction):
+    tools = get_tools()
+    if not tools:
+        await interaction.response.send_message("No skills/tools available.")
+        return
+    response = "Available skills/tools:\n" + "\n".join([f"- **{name}**: {tool.schema.get('function', {}).get('description', 'No description available')}" for name, tool in tools.items()])
+    await interaction.response.send_message(response)
+
+
+@discord_bot.tree.command(name="task", description="List activated scheduled tasks")
+async def task_command(interaction: discord.Interaction):
+    tasks = load_scheduled_tasks()
+    if not tasks:
+        await interaction.response.send_message("No scheduled tasks activated.")
+        return
+    response = "Activated scheduled tasks:\n" + "\n".join([f"- **{task['name']}**: {task['schedule']}" for task in tasks])
+    await interaction.response.send_message(response)
+
+
+@discord_bot.tree.command(name="persona", description="List available personas")
+async def persona_command(interaction: discord.Interaction):
+    personas = list_personas()
+    if not personas:
+        await interaction.response.send_message("No personas available.")
+        return
+    response = "Available personas:\n" + "\n".join([f"- **{name}**" for name in personas])
+    await interaction.response.send_message(response)
 
 # ── Events ───────────────────────────────────────────────────────────────────
 

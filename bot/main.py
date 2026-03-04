@@ -9,6 +9,9 @@ import asyncio
 from typing import Any
 
 from llmcord import main as legacy_main
+from bot.llm.tools.registry import get_tools
+from bot.config.tasks import load_tasks
+from bot.config.personas import list_personas
 
 
 async def run_bot(config: dict[str, Any] | None = None) -> None:  # config kept for future use

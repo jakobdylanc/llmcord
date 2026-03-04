@@ -1,5 +1,6 @@
 from .registry import (
     get_openai_tools,
+    get_tools,
     build_tool_registry,
     build_brave_registry,
     format_tool_result,
@@ -12,6 +13,7 @@ from .yahoo_finance import YAHOO_FINANCE_SCHEMA, get_market_prices
 
 __all__ = [
     "get_openai_tools",
+    "get_tools",
     "build_tool_registry",
     "build_brave_registry",
     "format_tool_result",
