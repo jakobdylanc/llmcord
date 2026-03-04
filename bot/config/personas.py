@@ -68,6 +68,9 @@ def list_personas() -> list[str]:
     personas = set()
     for path in PERSONAS_DIR.glob("*"):
         if path.is_file() and path.suffix in {".md", ".txt", ".yaml", ".yml"}:
+            # Skip example files
+            if "-example" in path.stem or path.stem.startswith("example-"):
+                continue
             personas.add(path.stem)
     return sorted(personas)
 

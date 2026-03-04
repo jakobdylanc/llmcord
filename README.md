@@ -136,6 +136,18 @@ Resets conversation history and message cache. Useful when switching models or s
 
 ---
 
+### Discord slash commands
+
+| Command | Description |
+|---------|-------------|
+| `/skill` | List available skills/tools |
+| `/persona` | List available personas |
+| `/task` | List activated scheduled tasks |
+| `/model` | Switch to a different model |
+| `/clear` | Reset conversation history |
+
+---
+
 ### And more
 - Vision model support (image attachments)
 - Text file attachments

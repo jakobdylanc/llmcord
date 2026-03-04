@@ -268,11 +268,13 @@ async def skill_command(interaction: discord.Interaction):
 
 @discord_bot.tree.command(name="task", description="List activated scheduled tasks")
 async def task_command(interaction: discord.Interaction):
-    tasks = load_scheduled_tasks()
-    if not tasks:
+    tasks = load_scheduled_tasks(config)
+    # Filter to only enabled tasks
+    enabled_tasks = [t for t in tasks.values() if t.get("enabled", True)]
+    if not enabled_tasks:
         await interaction.response.send_message("No scheduled tasks activated.")
         return
-    response = "Activated scheduled tasks:\n" + "\n".join([f"- **{task['name']}**: {task['schedule']}" for task in tasks])
+    response = "Activated scheduled tasks:\n" + "\n".join([f"- **{task['name']}**: {task.get('cron', 'No schedule')}" for task in enabled_tasks])
     await interaction.response.send_message(response)
 
 
