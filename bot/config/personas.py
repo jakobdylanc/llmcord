@@ -62,3 +62,15 @@ def try_load_persona(name: str | None) -> str | None:
         logging.warning("Failed to load persona '%s': %s", name, e)
         return None
 
+
+def list_personas() -> list[str]:
+    """List all available persona names from the personas directory."""
+    personas = set()
+    for path in PERSONAS_DIR.glob("*"):
+        if path.is_file() and path.suffix in {".md", ".txt", ".yaml", ".yml"}:
+            # Skip example files
+            if "-example" in path.stem or path.stem.startswith("example-"):
+                continue
+            personas.add(path.stem)
+    return sorted(personas)
+

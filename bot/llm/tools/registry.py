@@ -76,6 +76,14 @@ _ENTRIES: dict[str, ToolEntry] = {
 
 # ── Registry builders ─────────────────────────────────────────────────────────
 
+def get_tools() -> dict[str, ToolEntry]:
+    """
+    Return the tool registry (alias for build_tool_registry).
+    Used by skill_command in llmcord.py.
+    """
+    return build_tool_registry()
+
+
 def build_tool_registry() -> dict[str, ToolEntry]:
     """
     Return a fully-wired tool registry.

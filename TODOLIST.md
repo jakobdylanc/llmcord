@@ -41,7 +41,7 @@ Check items off as they're completed.
 ---
 
 ## 💡 Ideas / Backlog
-
+f
 - [ ] **`/tools` slash command** — list available tools and their descriptions, sourced
       from `SKILLS.md` or `registry.py` at runtime
 - [ ] **Hot-reload tools** — watch `registry.py` for changes and reload without restart

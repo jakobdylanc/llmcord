@@ -1,6 +1,6 @@
 """
 visuals_core.py
-Standalone visualization tool for OllamaService.
+Standalone visualization tool.
 
 Entry point: generate_visualization(**kwargs) -> str
 Supports: table, comparison_table, chart, multi_chart, heatmap, timeline, flowchart, tree
