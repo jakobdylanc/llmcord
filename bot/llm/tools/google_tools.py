@@ -142,9 +142,64 @@ def _get_header_value(headers: list, name: str) -> str:
 
 
 def _decode_email_body(payload: dict) -> str:
-    """Decode email body from payload."""
+    """Decode email body from payload with proper charset and encoding handling."""
+    import quopri
     try:
         mime_type = payload.get("mimeType", "")
+        
+        # Get headers for charset and transfer encoding
+        headers = payload.get("headers", [])
+        charset = "utf-8"
+        transfer_encoding = "base64"
+        
+        for header in headers:
+            name = header.get("name", "").lower()
+            value = header.get("value", "")
+            if name == "content-type":
+                if "charset=" in value.lower():
+                    charset = value.split("charset=")[1].strip().strip('"')
+            elif name == "content-transfer-encoding":
+                transfer_encoding = value.lower().strip()
+        
+        # Try common charsets for CJK content
+        charsets_to_try = [charset, "utf-8", "big5", "big5hkscs", "gb2312", "gbk", "gb18030", "iso-8859-1", "windows-1252"]
+        seen_charsets = set()
+        
+        def try_decode(data: bytes, charset: str) -> str | None:
+            try:
+                return data.decode(charset, errors="strict")
+            except (UnicodeDecodeError, LookupError):
+                return None
+        
+        def process_body_data(data: str) -> str | None:
+            """Decode body data based on transfer encoding and charset."""
+            try:
+                # First decode from transfer encoding
+                # Gmail API uses base64url encoding (URL-safe variant)
+                if transfer_encoding == "quoted-printable":
+                    decoded = quopri.decodestring(data)
+                elif transfer_encoding in ("base64", "base64url"):
+                    # Use urlsafe_b64decode for Gmail API
+                    # Add padding if needed
+                    padding = 4 - (len(data) % 4)
+                    if padding != 4:
+                        data = data + "=" * padding
+                    decoded = base64.urlsafe_b64decode(data)
+                else:
+                    # 7bit or 8bit - treat as plain bytes
+                    decoded = data.encode() if isinstance(data, str) else data
+                
+                # Then try to decode with various charsets
+                for cs in charsets_to_try:
+                    if cs and cs not in seen_charsets:
+                        seen_charsets.add(cs)
+                        try:
+                            return decoded.decode(cs, errors="strict")
+                        except (UnicodeDecodeError, LookupError):
+                            continue
+                return None
+            except Exception:
+                return None
         
         if mime_type in ("multipart/alternative", "multipart/mixed"):
             for part in payload.get("parts", []):
@@ -152,12 +207,16 @@ def _decode_email_body(payload: dict) -> str:
                 if part_mime in ("text/html", "text/plain"):
                     data = part.get("body", {}).get("data")
                     if data:
-                        return base64.b64decode(data).decode("utf-8", errors="replace")
+                        result = process_body_data(data)
+                        if result:
+                            return result
         
         # Direct body
         data = payload.get("body", {}).get("data")
         if data:
-            return base64.b64decode(data).decode("utf-8", errors="replace")
+            result = process_body_data(data)
+            if result:
+                return result
         
         # Parts without body data
         for part in payload.get("parts", []):
@@ -179,21 +238,17 @@ def _get_current_time() -> str:
 def _strip_html(text: str) -> str:
     """Remove HTML tags from text for readable plain text output."""
     import re
+    import html
+    # First decode all HTML entities (including numeric ones)
+    text = html.unescape(text)
     # Remove HTML tags
     text = re.sub(r'<[^>]+>', '', text)
-    # Decode common HTML entities
-    text = text.replace("&nbsp;", " ")
-    text = text.replace("&lt;", "<")
-    text = text.replace("&gt;", ">")
-    text = text.replace("&amp;", "&")
-    text = text.replace("&quot;", '"')
-    text = text.replace("&#39;", "'")
     # Clean up whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 
-def _format_email(mail: dict, service: Any, max_body_length: int = 1500) -> str:
+def _format_email(mail: dict, service: Any, max_body_length: int = 50000) -> str:
     """Format email data into a readable string."""
     headers = mail.get("payload", {}).get("headers", [])
     
@@ -259,7 +314,7 @@ def _format_event(event: dict) -> str:
 
 # ── Main Functions ────────────────────────────────────────────────────────
 
-def get_user_emails(count: int = -1, label_id: str = "INBOX", query: str = "", max_body_length: int = 1500) -> str:
+def get_user_emails(count: int = -1, label_id: str = "INBOX", query: str = "", max_body_length: int = 50000) -> str:
     """
     Retrieve emails from user's Gmail inbox.
     
@@ -267,7 +322,7 @@ def get_user_emails(count: int = -1, label_id: str = "INBOX", query: str = "", m
         count: Number of emails to fetch (default from config, or 10)
         label_id: Gmail label (INBOX, UNREAD, STARRED, SENT, IMPORTANT)
         query: Gmail search query (e.g., "in:inbox -category:promotions -in:spam")
-        max_body_length: Maximum length of email body to include (default 1500)
+        max_body_length: Maximum length of email body to include (default 50000)
     
     Returns:
         Formatted string with email details. If truncated, includes marker for remaining emails.
@@ -315,7 +370,7 @@ def get_user_emails(count: int = -1, label_id: str = "INBOX", query: str = "", m
         output = [f"Found {len(messages)} email(s):", ""]
         
         total_length = 0
-        max_total = 1800  # Leave room for header/footer
+        max_total = 100000  # Allow full email content for LLM summarization
         
         global _remaining_emails
         _remaining_emails = []  # Reset stored emails
@@ -498,12 +553,12 @@ GOOGLE_TOOLS_SCHEMA = {
 }
 
 
-def get_remaining_emails(max_body_length: int = 1500) -> str:
+def get_remaining_emails(max_body_length: int = 50000) -> str:
     """
     Get remaining emails that were truncated from a previous get_emails call.
     
     Args:
-        max_body_length: Maximum length of email body to include (default 1500)
+        max_body_length: Maximum length of email body to include (default 50000)
     
     Returns:
         Formatted string with remaining email details
