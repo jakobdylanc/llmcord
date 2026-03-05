@@ -848,7 +848,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
 # ── Scheduled tasks ──────────────────────────────────────────────────────────
 
-async def run_scheduled_task(task_name: str, task_config: dict[str, Any]) -> None:
+async def run_scheduled_task(task_name: str, task_config: dict[str, Any]) -> str | None:
     if not task_config.get("enabled", False):
         return
 
@@ -939,7 +939,8 @@ async def run_scheduled_task(task_name: str, task_config: dict[str, Any]) -> Non
                     fc = config["providers"][fp]
                     fmp = config["models"].get(fb)
                     fmp_extra = build_extra_body(fc, fmp, exclude={"tools", "system_prompt"})
-                    fmp_tools = (fmp or {}).get("tools") or [] if isinstance(fmp, dict) else []
+                    # Use task-level tools override if available, otherwise fall back to model-level tools
+                    fmp_tools = task_tool_names if task_tool_names else ((fmp or {}).get("tools") or [] if isinstance(fmp, dict) else [])
                     models_to_try.append((fm, build_openai_client(fc), fb, fc.get("extra_headers"), fc.get("extra_query"), fmp_extra, fmp_tools))
                 except Exception as se:
                     logging.warning(f"Task '{task_name}': fallback setup failed for '{fb}': {se}")
