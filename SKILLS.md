@@ -16,6 +16,8 @@ This file is the skill index for the bot. Each tool has its own skill doc under
 |-------|------|----------|-------------|
 | 🌐 `web_search` | [`skills/web_search.md`](bot/llm/tools/skills/web_search.md) | Any | Search the web (Brave API) |
 | 📊 `visuals_core` | [`skills/visuals_core.md`](bot/llm/tools/skills/visuals_core.md) | Any | ASCII/Markdown charts, tables, timelines |
+| 📈 `get_market_prices` | [`skills/yahoo_finance.md`](bot/llm/tools/skills/yahoo_finance.md) | Any | Stock/index prices from Yahoo Finance |
+| 📧 `google_tools` | [`skills/google_tools.md`](bot/llm/tools/skills/google_tools.md) | Any | Gmail + Calendar (read-only) |
 
 ## Using skills in config.yaml
 

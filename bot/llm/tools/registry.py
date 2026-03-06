@@ -26,6 +26,7 @@ from .web_search import (
 )
 from .visuals_core import VISUALS_CORE_SCHEMA, generate_visualization
 from .yahoo_finance import YAHOO_FINANCE_SCHEMA, get_market_prices
+from .google_tools import GOOGLE_TOOLS_SCHEMA, google_tools_wrapper
 
 
 # ── ToolEntry ─────────────────────────────────────────────────────────────────
@@ -70,6 +71,10 @@ _ENTRIES: dict[str, ToolEntry] = {
     "get_market_prices": ToolEntry(
         schema=YAHOO_FINANCE_SCHEMA,
         fn=get_market_prices,
+    ),
+    "google_tools": ToolEntry(
+        schema=GOOGLE_TOOLS_SCHEMA,
+        fn=google_tools_wrapper,
     ),
 }
 

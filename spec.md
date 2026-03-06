@@ -60,7 +60,8 @@ flowchart LR
   - `web_search.py`: Brave Search API for web_search; schema and formatter.
   - `visuals_core.py`: ASCII/Markdown visualizations (table, chart, heatmap, timeline, flowchart, tree).
   - `yahoo_finance.py`: Yahoo Finance closing prices via yfinance.
-  - `skills/`: OpenClaw-format skill docs (e.g. `web_search.md`, `visuals_core.md`) injected into system prompt when tools are enabled.
+  - `google_tools.py`: Gmail + Calendar access via Google API (read-only).
+  - `skills/`: OpenClaw-format skill docs (e.g. `web_search.md`, `visuals_core.md`, `yahoo_finance.md`, `google_tools.md`) injected into system prompt when tools are enabled.
 
 ## Key API / Functions
 
@@ -105,6 +106,11 @@ flowchart LR
 | | `VISUALS_CORE_SCHEMA` | OpenAI-format tool schema. |
 | **bot/llm/tools/yahoo_finance.py** | `get_market_prices(tickers, days)` | Fetch closing prices from Yahoo Finance; returns formatted string. |
 | | `YAHOO_FINANCE_SCHEMA` | OpenAI-format tool schema. |
+| **bot/llm/tools/google_tools.py** | `get_user_emails(count, label_id)` | Fetch emails from Gmail inbox. |
+| | `get_email_content(message_id)` | Get full content of a specific email. |
+| | `get_user_events(count, calendar_id)` | Fetch upcoming calendar events. |
+| | `google_tools_wrapper(action, count, label_id, message_id, calendar_id)` | Unified wrapper for all Google tools. |
+| | `GOOGLE_TOOLS_SCHEMA` | OpenAI-format tool schema. |
 
 ## Other Files
 
@@ -128,6 +134,8 @@ flowchart LR
 - **OpenAI-compatible APIs**: `client.chat.completions.create(model, messages, tools?, stream?, extra_headers?, extra_query?, extra_body?)`. Tool calls return `tool_calls`; bot executes tools locally and appends `role: "tool"` messages. Used for OpenRouter, OpenAI, xAI, Groq, etc.
 
 - **Yahoo Finance**: Via `yfinance` library (no REST API key). `yf.Ticker(symbol).history(period=f"{days}d")` for closing prices; used by `get_market_prices`.
+
+- **Google APIs (Gmail + Calendar)**: OAuth 2.0 with read-only scopes (`gmail.readonly`, `calendar.readonly`). Requires `credentials.json` from Google Cloud Console. Uses `google-api-python-client`, `google-auth-httplib2`, `google-auth-oauthlib`. Token stored in `token.json`. Used by `google_tools` for read-only email/calendar access.
 
 ## Testing
 

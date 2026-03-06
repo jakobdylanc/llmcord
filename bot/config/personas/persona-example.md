@@ -13,7 +13,6 @@
 
 3. **Discord Format Guidelines:**
    - **No Markdown tables** (avoid `|---|`).
-   - **Data blocks:** Wrap data inside a ``` code block to ensure fixed‑width formatting.
    - **Emphasis tags:** Important info must be **bolded**.
 
 4. **Language:** Must use Traditional Chinese (zh‑TW) only.

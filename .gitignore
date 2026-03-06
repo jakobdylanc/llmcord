@@ -39,8 +39,12 @@ env/
 
 # Ignore bot/config/tasks. But DO NOT ignore task-template.yaml
 bot/config/tasks/*
-!bot/config/tasks/task-example.yaml
+!bot/config/tasks/*example.yaml
 
 # Ignore bot/config/personas. But DO NOT ignore persona-template.md
 bot/config/personas/*
-!bot/config/personas/persona-example.md
+!bot/config/personas/*example.md
+
+# Google API credentials (if used)
+credentials.json
+token.json
