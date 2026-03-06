@@ -106,9 +106,13 @@ async def on_message(new_msg: discord.Message) -> None:
     global last_task_time
 
     is_dm = new_msg.channel.type == discord.ChannelType.private
+    is_thread = new_msg.channel.type in (discord.ChannelType.public_thread, discord.ChannelType.private_thread)
 
-    if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
+    if new_msg.author.bot:
         return
+    if new_msg.content.startswith("."):
+        return
+    is_mentioned = is_dm or is_thread or discord_bot.user in new_msg.mentions
 
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
     channel_ids = set(filter(None, (new_msg.channel.id, getattr(new_msg.channel, "parent_id", None), getattr(new_msg.channel, "category_id", None))))
@@ -136,6 +140,59 @@ async def on_message(new_msg: discord.Message) -> None:
     if is_bad_user or is_bad_channel:
         return
 
+    # Gate check: if not explicitly mentioned, use a smaller model to decide whether to interject
+    if not is_mentioned:
+        interjection_model_name = config.get("interjection_model")
+        if not interjection_model_name:
+            return
+
+        # Fetch recent messages for the gate to evaluate
+        gate_msgs = []
+        async for msg in new_msg.channel.history(limit=10):
+            if msg.type in (discord.MessageType.default, discord.MessageType.reply):
+                gate_msgs.append(msg)
+
+        gate_context = "\n".join(
+            f"{'[Assistant]' if m.author == discord_bot.user else f'[{m.author.display_name}]'}: {m.content}"
+            for m in reversed(gate_msgs)
+        )
+
+        ij_provider, ij_model = interjection_model_name.removesuffix(":vision").split("/", 1)
+        ij_provider_config = config["providers"][ij_provider]
+        ij_client = AsyncOpenAI(
+            base_url=ij_provider_config["base_url"],
+            api_key=ij_provider_config.get("api_key", "sk-no-key-required"),
+        )
+
+        gate_system = (
+            "You decide whether an AI assistant should interject in a Discord conversation. "
+            "Be conservative. Only say YES if:\n"
+            "- Someone says hi to the assistant (the assistant is called Claude)"
+            "- Someone is asking a question that hasn't been answered\n"
+            "- Someone is directly asking for help or information the assistant could provide\n"
+            "- The assistant was recently part of the conversation and a follow-up is natural\n\n"
+            "Do NOT interject if users are just chatting, joking, or having a normal conversation. "
+            "When in doubt, say NO.\n"
+            "Respond with only YES or NO."
+        )
+
+        try:
+            gate_resp = await ij_client.chat.completions.create(
+                model=ij_model,
+                messages=[
+                    dict(role="system", content=gate_system),
+                    dict(role="user", content=gate_context),
+                ],
+                max_tokens=3,
+            )
+            should_interject = gate_resp.choices[0].message.content.strip().upper().startswith("YES")
+            if not should_interject:
+                return
+            logging.info(f"Interjection approved for message {new_msg.id}")
+        except Exception:
+            logging.exception("Interjection gate check failed")
+            return  # Conservative: don't interject on error
+
     provider_slash_model = curr_model
     provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
 
@@ -160,80 +217,210 @@ async def on_message(new_msg: discord.Message) -> None:
     # Build message chain and set user warnings
     messages = []
     user_warnings = set()
-    curr_msg = new_msg
 
-    while curr_msg != None and len(messages) < max_messages:
-        curr_node = msg_nodes.setdefault(curr_msg.id, MsgNode())
+    async def process_msg(msg: discord.Message) -> tuple[dict | None, set]:
+        """Process a single message into a chat message dict and warnings."""
+        warnings = set()
+        node = msg_nodes.setdefault(msg.id, MsgNode())
 
-        async with curr_node.lock:
-            if curr_node.text == None:
-                cleaned_content = curr_msg.content.removeprefix(discord_bot.user.mention).lstrip()
+        async with node.lock:
+            if node.text == None:
+                cleaned_content = msg.content.removeprefix(discord_bot.user.mention).lstrip()
 
-                good_attachments = [att for att in curr_msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
+                good_attachments = [att for att in msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
 
                 attachment_responses = await asyncio.gather(*[httpx_client.get(att.url) for att in good_attachments])
 
-                curr_node.role = "assistant" if curr_msg.author == discord_bot.user else "user"
+                node.role = "assistant" if msg.author == discord_bot.user else "user"
 
-                curr_node.text = "\n".join(
+                node.text = "\n".join(
                     ([cleaned_content] if cleaned_content else [])
-                    + ["\n".join(filter(None, (embed.title, embed.description, embed.footer.text))) for embed in curr_msg.embeds]
-                    + [component.content for component in curr_msg.components if component.type == discord.ComponentType.text_display]
+                    + ["\n".join(filter(None, (embed.title, embed.description, embed.footer.text))) for embed in msg.embeds]
+                    + [component.content for component in msg.components if component.type == discord.ComponentType.text_display]
                     + [resp.text for att, resp in zip(good_attachments, attachment_responses) if att.content_type.startswith("text")]
                 )
 
-                curr_node.images = [
+                node.images = [
                     dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
                     for att, resp in zip(good_attachments, attachment_responses)
                     if att.content_type.startswith("image")
                 ]
 
-                if curr_node.role == "user" and (curr_node.text or curr_node.images):
-                    curr_node.text = f"<@{curr_msg.author.id}>: {curr_node.text}"
+                if node.role == "user" and (node.text or node.images):
+                    node.text = f"<@{msg.author.id}>: {node.text}"
 
-                curr_node.has_bad_attachments = len(curr_msg.attachments) > len(good_attachments)
+                node.has_bad_attachments = len(msg.attachments) > len(good_attachments)
 
-                try:
-                    if (
-                        curr_msg.reference == None
-                        and discord_bot.user.mention not in curr_msg.content
-                        and (prev_msg_in_channel := ([m async for m in curr_msg.channel.history(before=curr_msg, limit=1)] or [None])[0])
-                        and prev_msg_in_channel.type in (discord.MessageType.default, discord.MessageType.reply)
-                        and prev_msg_in_channel.author == (discord_bot.user if curr_msg.channel.type == discord.ChannelType.private else curr_msg.author)
-                    ):
-                        curr_node.parent_msg = prev_msg_in_channel
-                    else:
-                        is_public_thread = curr_msg.channel.type == discord.ChannelType.public_thread
-                        parent_is_thread_start = is_public_thread and curr_msg.reference == None and curr_msg.channel.parent.type == discord.ChannelType.text
-
-                        if parent_msg_id := curr_msg.channel.id if parent_is_thread_start else getattr(curr_msg.reference, "message_id", None):
-                            if parent_is_thread_start:
-                                curr_node.parent_msg = curr_msg.channel.starter_message or await curr_msg.channel.parent.fetch_message(parent_msg_id)
-                            else:
-                                curr_node.parent_msg = curr_msg.reference.cached_message or await curr_msg.channel.fetch_message(parent_msg_id)
-
-                except (discord.NotFound, discord.HTTPException):
-                    logging.exception("Error fetching next message in the chain")
-                    curr_node.fetch_parent_failed = True
-
-            if curr_node.images[:max_images]:
-                content = [dict(type="text", text=curr_node.text[:max_text])] + curr_node.images[:max_images]
+            if node.images[:max_images]:
+                content = [dict(type="text", text=node.text[:max_text])] + node.images[:max_images]
             else:
-                content = curr_node.text[:max_text]
+                content = node.text[:max_text]
+
+            if len(node.text) > max_text:
+                warnings.add(f"⚠️ Max {max_text:,} characters per message")
+            if len(node.images) > max_images:
+                warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message" if max_images > 0 else "⚠️ Can't see images")
+            if node.has_bad_attachments:
+                warnings.add("⚠️ Unsupported attachments")
 
             if content != "":
-                messages.append(dict(content=content, role=curr_node.role))
+                return dict(content=content, role=node.role), warnings
+            return None, warnings
 
-            if len(curr_node.text) > max_text:
-                user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
-            if len(curr_node.images) > max_images:
-                user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message" if max_images > 0 else "⚠️ Can't see images")
-            if curr_node.has_bad_attachments:
-                user_warnings.add("⚠️ Unsupported attachments")
-            if curr_node.fetch_parent_failed or (curr_node.parent_msg != None and len(messages) == max_messages):
-                user_warnings.add(f"⚠️ Only using last {len(messages)} message{'' if len(messages) == 1 else 's'}")
+    earliest_msg_time = new_msg.created_at
 
-            curr_msg = curr_node.parent_msg
+    if is_thread:
+        # In threads, fetch full history chronologically (oldest first)
+        thread_msgs = []
+        try:
+            # Fetch the thread starter message if this is a public thread
+            if new_msg.channel.type == discord.ChannelType.public_thread and new_msg.channel.parent.type == discord.ChannelType.text:
+                starter = new_msg.channel.starter_message or await new_msg.channel.parent.fetch_message(new_msg.channel.id)
+                if starter:
+                    thread_msgs.append(starter)
+        except (discord.NotFound, discord.HTTPException):
+            logging.exception("Error fetching thread starter message")
+
+        async for msg in new_msg.channel.history(limit=max_messages, oldest_first=True):
+            if msg.type in (discord.MessageType.default, discord.MessageType.reply):
+                thread_msgs.append(msg)
+
+        # Trim to max_messages (keep the most recent ones)
+        if len(thread_msgs) > max_messages:
+            thread_msgs = thread_msgs[-max_messages:]
+            user_warnings.add(f"⚠️ Only using last {max_messages} message{'' if max_messages == 1 else 's'}")
+
+        for msg in thread_msgs:
+            result, warnings = await process_msg(msg)
+            user_warnings |= warnings
+            if result:
+                messages.append(result)
+
+        if thread_msgs:
+            earliest_msg_time = thread_msgs[0].created_at
+    elif is_dm:
+        # Original reply-chain behavior for DMs
+        curr_msg = new_msg
+
+        while curr_msg != None and len(messages) < max_messages:
+            curr_node = msg_nodes.setdefault(curr_msg.id, MsgNode())
+
+            async with curr_node.lock:
+                if curr_node.text == None:
+                    cleaned_content = curr_msg.content.removeprefix(discord_bot.user.mention).lstrip()
+
+                    good_attachments = [att for att in curr_msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
+
+                    attachment_responses = await asyncio.gather(*[httpx_client.get(att.url) for att in good_attachments])
+
+                    curr_node.role = "assistant" if curr_msg.author == discord_bot.user else "user"
+
+                    curr_node.text = "\n".join(
+                        ([cleaned_content] if cleaned_content else [])
+                        + ["\n".join(filter(None, (embed.title, embed.description, embed.footer.text))) for embed in curr_msg.embeds]
+                        + [component.content for component in curr_msg.components if component.type == discord.ComponentType.text_display]
+                        + [resp.text for att, resp in zip(good_attachments, attachment_responses) if att.content_type.startswith("text")]
+                    )
+
+                    curr_node.images = [
+                        dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
+                        for att, resp in zip(good_attachments, attachment_responses)
+                        if att.content_type.startswith("image")
+                    ]
+
+                    if curr_node.role == "user" and (curr_node.text or curr_node.images):
+                        curr_node.text = f"<@{curr_msg.author.id}>: {curr_node.text}"
+
+                    curr_node.has_bad_attachments = len(curr_msg.attachments) > len(good_attachments)
+
+                    try:
+                        if (
+                            curr_msg.reference == None
+                            and discord_bot.user.mention not in curr_msg.content
+                            and (prev_msg_in_channel := ([m async for m in curr_msg.channel.history(before=curr_msg, limit=1)] or [None])[0])
+                            and prev_msg_in_channel.type in (discord.MessageType.default, discord.MessageType.reply)
+                            and prev_msg_in_channel.author == (discord_bot.user if curr_msg.channel.type == discord.ChannelType.private else curr_msg.author)
+                        ):
+                            curr_node.parent_msg = prev_msg_in_channel
+                        else:
+                            is_public_thread = curr_msg.channel.type == discord.ChannelType.public_thread
+                            parent_is_thread_start = is_public_thread and curr_msg.reference == None and curr_msg.channel.parent.type == discord.ChannelType.text
+
+                            if parent_msg_id := curr_msg.channel.id if parent_is_thread_start else getattr(curr_msg.reference, "message_id", None):
+                                if parent_is_thread_start:
+                                    curr_node.parent_msg = curr_msg.channel.starter_message or await curr_msg.channel.parent.fetch_message(parent_msg_id)
+                                else:
+                                    curr_node.parent_msg = curr_msg.reference.cached_message or await curr_msg.channel.fetch_message(parent_msg_id)
+
+                    except (discord.NotFound, discord.HTTPException):
+                        logging.exception("Error fetching next message in the chain")
+                        curr_node.fetch_parent_failed = True
+
+                if curr_node.images[:max_images]:
+                    content = [dict(type="text", text=curr_node.text[:max_text])] + curr_node.images[:max_images]
+                else:
+                    content = curr_node.text[:max_text]
+
+                if content != "":
+                    messages.append(dict(content=content, role=curr_node.role))
+                    earliest_msg_time = curr_msg.created_at
+
+                if len(curr_node.text) > max_text:
+                    user_warnings.add(f"⚠️ Max {max_text:,} characters per message")
+                if len(curr_node.images) > max_images:
+                    user_warnings.add(f"⚠️ Max {max_images} image{'' if max_images == 1 else 's'} per message" if max_images > 0 else "⚠️ Can't see images")
+                if curr_node.has_bad_attachments:
+                    user_warnings.add("⚠️ Unsupported attachments")
+                if curr_node.fetch_parent_failed or (curr_node.parent_msg != None and len(messages) == max_messages):
+                    user_warnings.add(f"⚠️ Only using last {len(messages)} message{'' if len(messages) == 1 else 's'}")
+
+                curr_msg = curr_node.parent_msg
+
+    else:
+        # Fetch recent channel history with gap-based and token-based cutoffs
+        context_gap_minutes = config.get("context_gap_minutes", 10)
+        max_context_tokens = config.get("max_context_tokens", 10000)
+
+        recent_msgs = []
+        estimated_tokens = 0
+        prev_msg_time = new_msg.created_at
+
+        async for msg in new_msg.channel.history(limit=max_messages, before=new_msg):
+            if msg.type not in (discord.MessageType.default, discord.MessageType.reply):
+                continue
+
+            # Check for silence gap
+            time_gap = (prev_msg_time - msg.created_at).total_seconds() / 60
+            if time_gap > context_gap_minutes:
+                break
+
+            # Estimate tokens (rough: ~4 chars per token)
+            msg_tokens = len(msg.content) / 4
+            if estimated_tokens + msg_tokens > max_context_tokens:
+                break
+
+            estimated_tokens += msg_tokens
+            recent_msgs.append(msg)
+            prev_msg_time = msg.created_at
+
+        # Process in chronological order (oldest first)
+        for msg in reversed(recent_msgs):
+            result, warnings = await process_msg(msg)
+            user_warnings |= warnings
+            if result:
+                messages.append(result)
+
+        # Always include the current message
+        result, warnings = await process_msg(new_msg)
+        user_warnings |= warnings
+        if result:
+            messages.append(result)
+
+        if recent_msgs:
+            earliest_msg_time = recent_msgs[-1].created_at
+
+        if len(recent_msgs) >= max_messages:
+            user_warnings.add(f"⚠️ Only using last {max_messages} message{'s' if max_messages != 1 else ''}")
 
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
@@ -249,13 +436,19 @@ async def on_message(new_msg: discord.Message) -> None:
     response_msgs = []
     response_contents = []
 
-    openai_kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
+    ordered_messages = messages[::-1] if is_dm else messages
+    openai_kwargs = dict(model=model, messages=ordered_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
+
+    earliest_timestamp = int(earliest_msg_time.timestamp())
+    context_info = f"Earliest message: <t:{earliest_timestamp}:t>"
 
     if use_plain_responses := config.get("use_plain_responses", False):
         max_message_length = 4000
     else:
         max_message_length = 4096 - len(STREAMING_INDICATOR)
-        embed = discord.Embed.from_dict(dict(fields=[dict(name=warning, value="", inline=False) for warning in sorted(user_warnings)]))
+        fields = [dict(name=warning, value="", inline=False) for warning in sorted(user_warnings)]
+        fields.append(dict(name=context_info, value="", inline=False))
+        embed = discord.Embed.from_dict(dict(fields=fields))
 
     async def reply_helper(**reply_kwargs) -> None:
         reply_target = new_msg if not response_msgs else response_msgs[-1]
@@ -310,11 +503,22 @@ async def on_message(new_msg: discord.Message) -> None:
                         last_task_time = datetime.now().timestamp()
 
             if use_plain_responses:
-                for content in response_contents:
+                for i, content in enumerate(response_contents):
+                    if i == 0:
+                        content = f"-# {context_info}\n{content}"
                     await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
 
     except Exception:
         logging.exception("Error while generating response")
+        if not response_msgs:
+            try:
+                if use_plain_responses:
+                    await reply_helper(view=LayoutView().add_item(TextDisplay(content="⚠️ Something went wrong. Please try again later.")))
+                else:
+                    error_embed = discord.Embed(description="⚠️ Something went wrong. Please try again later.", color=EMBED_COLOR_INCOMPLETE)
+                    await reply_helper(embed=error_embed, silent=True)
+            except Exception:
+                logging.exception("Error while sending error message")
 
     for response_msg in response_msgs:
         msg_nodes[response_msg.id].text = "".join(response_contents)

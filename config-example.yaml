@@ -11,6 +11,15 @@ max_messages: 25
 use_plain_responses: false
 allow_dms: true
 
+# Recent channel history settings (non-thread, non-DM):
+context_gap_minutes: 10
+max_context_tokens: 10000
+
+# Interjection: use a small model to decide if the bot should respond without being @mentioned.
+# Omit or leave blank to only respond when @mentioned (default behavior).
+# Must reference a provider/model from the providers section below.
+interjection_model: openrouter/google/gemma-3-4b-it:free
+
 permissions:
   users:
     admin_ids: []
