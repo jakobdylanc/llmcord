@@ -163,7 +163,6 @@ def _decode_email_body(payload: dict) -> str:
         
         # Try common charsets for CJK content
         charsets_to_try = [charset, "utf-8", "big5", "big5hkscs", "gb2312", "gbk", "gb18030", "iso-8859-1", "windows-1252"]
-        seen_charsets = set()
         
         def try_decode(data: bytes, charset: str) -> str | None:
             try:
@@ -173,6 +172,7 @@ def _decode_email_body(payload: dict) -> str:
         
         def process_body_data(data: str) -> str | None:
             """Decode body data based on transfer encoding and charset."""
+            seen_charsets = set()  # Local set for each call
             try:
                 # First decode from transfer encoding
                 # Gmail API uses base64url encoding (URL-safe variant)
@@ -201,15 +201,12 @@ def _decode_email_body(payload: dict) -> str:
             except Exception:
                 return None
         
-        if mime_type in ("multipart/alternative", "multipart/mixed"):
+        # For multipart messages, recursively process each part to get proper charset/encoding
+        if mime_type in ("multipart/alternative", "multipart/mixed", "multipart/related"):
             for part in payload.get("parts", []):
-                part_mime = part.get("mimeType", "")
-                if part_mime in ("text/html", "text/plain"):
-                    data = part.get("body", {}).get("data")
-                    if data:
-                        result = process_body_data(data)
-                        if result:
-                            return result
+                result = _decode_email_body(part)
+                if result and not result.startswith("Error decoding"):
+                    return result
         
         # Direct body
         data = payload.get("body", {}).get("data")
@@ -218,10 +215,10 @@ def _decode_email_body(payload: dict) -> str:
             if result:
                 return result
         
-        # Parts without body data
+        # Parts without body data - recursively process
         for part in payload.get("parts", []):
             result = _decode_email_body(part)
-            if result:
+            if result and not result.startswith("Error decoding"):
                 return result
                 
     except Exception as e:
