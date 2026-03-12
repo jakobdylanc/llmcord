@@ -6,12 +6,15 @@ Discord bot that connects to multiple LLM providers (OpenRouter, Ollama, Open We
 
 | Document | Purpose |
 |---------|---------|
+| [OpenSpec](openspec/specs/) | **AI source of truth** - APIs, data models, interfaces, current state |
 | [spec.md](spec.md) | Technical spec: key APIs/functions, module layout, external APIs, architecture diagram. |
 | [report.md](report.md) | Development status, phases, current architecture, how to maintain. |
 | [TODOLIST.md](TODOLIST.md) | Done / in progress / backlog and links to other docs. |
 | [SKILLS.md](SKILLS.md) | Skill index (tools the bot can use); see also `bot/llm/tools/skills/`. |
 | [bot/config/README.md](bot/config/README.md) | Personas and scheduled tasks (format, fields, cron). |
 | [bot/llm/tools/README.md](bot/llm/tools/README.md) | How to add a new tool. |
+
+> **For AI/Agents**: Read [OpenSpec](openspec/specs/) to understand current state, APIs, and data models.
 
 ### Layout
 
