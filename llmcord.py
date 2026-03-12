@@ -2,8 +2,11 @@ import asyncio
 from base64 import b64encode
 from dataclasses import dataclass, field
 from datetime import datetime
+import io
 import logging
 from typing import Any, Literal, Optional
+
+from PIL import Image
 
 import discord
 from discord.app_commands import Choice
@@ -27,6 +30,22 @@ STREAMING_INDICATOR = " ⚪"
 EDIT_DELAY_SECONDS = 1
 
 MAX_MESSAGE_NODES = 500
+
+SUPPORTED_IMAGE_TYPES = ("image/jpeg", "image/png")
+
+
+def _ensure_jpeg_or_png(content_type: str, data: bytes, max_size: int = 1024) -> tuple[str, bytes]:
+    """Convert image to JPEG if it's not already JPEG or PNG, and cap resolution."""
+    img = Image.open(io.BytesIO(data))
+    resized = max(img.size) > max_size
+    if resized:
+        img.thumbnail((max_size, max_size))
+    if not resized and content_type in SUPPORTED_IMAGE_TYPES:
+        return content_type, data
+    fmt = "PNG" if content_type == "image/png" else "JPEG"
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format=fmt)
+    return f"image/{fmt.lower()}", buf.getvalue()
 
 
 def get_config(filename: str = "config.yaml") -> dict[str, Any]:
@@ -54,6 +73,7 @@ class MsgNode:
 
     text: Optional[str] = None
     images: list[dict[str, Any]] = field(default_factory=list)
+    image_descriptions: list[str] = field(default_factory=list)
 
     has_bad_attachments: bool = False
     fetch_parent_failed: bool = False
@@ -217,6 +237,7 @@ async def on_message(new_msg: discord.Message) -> None:
     # Build message chain and set user warnings
     messages = []
     user_warnings = set()
+    nodes_needing_descriptions = []
 
     async def process_msg(msg: discord.Message) -> tuple[dict | None, set]:
         """Process a single message into a chat message dict and warnings."""
@@ -241,9 +262,10 @@ async def on_message(new_msg: discord.Message) -> None:
                 )
 
                 node.images = [
-                    dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
+                    dict(type="image_url", image_url=dict(url=f"data:{mime};base64,{b64encode(data).decode('utf-8')}"))
                     for att, resp in zip(good_attachments, attachment_responses)
                     if att.content_type.startswith("image")
+                    for mime, data in [_ensure_jpeg_or_png(att.content_type, resp.content)]
                 ]
 
                 if node.role == "user" and (node.text or node.images):
@@ -251,8 +273,13 @@ async def on_message(new_msg: discord.Message) -> None:
 
                 node.has_bad_attachments = len(msg.attachments) > len(good_attachments)
 
-            if node.images[:max_images]:
+            if node.images[:max_images] and node.image_descriptions:
+                img_notes = "\n".join(f"[Image: {desc}]" for desc in node.image_descriptions[:max_images])
+                text_part = node.text[:max_text]
+                content = f"{text_part}\n{img_notes}" if text_part else img_notes
+            elif node.images[:max_images]:
                 content = [dict(type="text", text=node.text[:max_text])] + node.images[:max_images]
+                nodes_needing_descriptions.append(node)
             else:
                 content = node.text[:max_text]
 
@@ -323,9 +350,10 @@ async def on_message(new_msg: discord.Message) -> None:
                     )
 
                     curr_node.images = [
-                        dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
+                        dict(type="image_url", image_url=dict(url=f"data:{mime};base64,{b64encode(data).decode('utf-8')}"))
                         for att, resp in zip(good_attachments, attachment_responses)
                         if att.content_type.startswith("image")
+                        for mime, data in [_ensure_jpeg_or_png(att.content_type, resp.content)]
                     ]
 
                     if curr_node.role == "user" and (curr_node.text or curr_node.images):
@@ -356,8 +384,13 @@ async def on_message(new_msg: discord.Message) -> None:
                         logging.exception("Error fetching next message in the chain")
                         curr_node.fetch_parent_failed = True
 
-                if curr_node.images[:max_images]:
+                if curr_node.images[:max_images] and curr_node.image_descriptions:
+                    img_notes = "\n".join(f"[Image: {desc}]" for desc in curr_node.image_descriptions[:max_images])
+                    text_part = curr_node.text[:max_text]
+                    content = f"{text_part}\n{img_notes}" if text_part else img_notes
+                elif curr_node.images[:max_images]:
                     content = [dict(type="text", text=curr_node.text[:max_text])] + curr_node.images[:max_images]
+                    nodes_needing_descriptions.append(curr_node)
                 else:
                     content = curr_node.text[:max_text]
 
@@ -508,14 +541,17 @@ async def on_message(new_msg: discord.Message) -> None:
                         content = f"-# {context_info}\n{content}"
                     await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
 
-    except Exception:
+    except Exception as e:
         logging.exception("Error while generating response")
         if not response_msgs:
+            error_type = type(e).__name__
+            error_brief = str(e).split("\n")[0][:200] if str(e) else "Unknown error"
+            error_text = f"⚠️ **{error_type}**: {error_brief}"
             try:
                 if use_plain_responses:
-                    await reply_helper(view=LayoutView().add_item(TextDisplay(content="⚠️ Something went wrong. Please try again later.")))
+                    await reply_helper(view=LayoutView().add_item(TextDisplay(content=error_text)))
                 else:
-                    error_embed = discord.Embed(description="⚠️ Something went wrong. Please try again later.", color=EMBED_COLOR_INCOMPLETE)
+                    error_embed = discord.Embed(description=error_text, color=EMBED_COLOR_INCOMPLETE)
                     await reply_helper(embed=error_embed, silent=True)
             except Exception:
                 logging.exception("Error while sending error message")
@@ -523,6 +559,31 @@ async def on_message(new_msg: discord.Message) -> None:
     for response_msg in response_msgs:
         msg_nodes[response_msg.id].text = "".join(response_contents)
         msg_nodes[response_msg.id].lock.release()
+
+    # Generate and cache image descriptions for nodes that sent real images
+    for node in nodes_needing_descriptions:
+        if node.image_descriptions:
+            continue
+        descriptions = []
+        for img in node.images[:max_images]:
+            try:
+                desc_resp = await openai_client.chat.completions.create(
+                    model=model,
+                    messages=[dict(role="user", content=[
+                        dict(type="text", text="Describe this image in one brief sentence."),
+                        img,
+                    ])],
+                    max_tokens=100,
+                    extra_headers=extra_headers,
+                    extra_query=extra_query,
+                    extra_body=extra_body,
+                )
+                descriptions.append(desc_resp.choices[0].message.content.strip())
+            except Exception:
+                logging.exception("Error generating image description")
+                descriptions.append("(image description unavailable)")
+        node.image_descriptions = descriptions
+        logging.info(f"Cached {len(descriptions)} image description(s) for message node")
 
     # Delete oldest MsgNodes (lowest message IDs) from the cache
     if (num_nodes := len(msg_nodes)) > MAX_MESSAGE_NODES:
