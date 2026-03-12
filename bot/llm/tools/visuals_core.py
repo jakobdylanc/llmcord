@@ -528,3 +528,23 @@ VISUALS_CORE_SCHEMA = {
     },
 }
 
+
+# ── Dynamic tool registration ────────────────────────────────────────────────
+
+from bot.llm.tools._types import ToolEntry
+
+# Wrapper to handle JSON string data from model
+def _visuals_core_wrapper(viz_type: str, data: str, title: str = "") -> str:
+    try:
+        kwargs = json.loads(data) if isinstance(data, str) else data
+    except Exception:
+        kwargs = {}
+    return generate_visualization(viz_type=viz_type, title=title, **kwargs)
+
+
+TOOL_NAME = "visuals_core"
+TOOL_ENTRY = ToolEntry(
+    schema=VISUALS_CORE_SCHEMA,
+    fn=_visuals_core_wrapper,
+)
+

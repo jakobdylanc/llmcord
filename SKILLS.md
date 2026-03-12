@@ -27,13 +27,39 @@ models:
     tools: ["web_search", "visuals_core"]
 ```
 
-Tool names must match keys in `bot/llm/tools/registry.py`.
+Tool names are auto-discovered from `bot/llm/tools/` directory.
 
 ## Adding a new skill
 
-See [`bot/llm/tools/README.md`](bot/llm/tools/README.md) for the full guide.
-Short version:
-1. Create `bot/llm/tools/my_tool.py` (callable + schema)
-2. Register in `bot/llm/tools/registry.py`
-3. Write `bot/llm/tools/skills/my_tool.md` (OpenClaw format)
-4. Add to `config.yaml` under the model's `tools:` list
+1. Create `bot/llm/tools/my_tool.py` with:
+   ```python
+   from bot.llm.tools.registry import ToolEntry
+
+   def my_tool(arg1: str) -> str:
+       return f"Result: {arg1}"
+
+   MY_TOOL_SCHEMA = {
+       "type": "function",
+       "function": {
+           "name": "my_tool",
+           "description": "What the tool does",
+           "parameters": {
+               "type": "object",
+               "properties": {
+                   "arg1": {"type": "string", "description": "Description"}
+               },
+               "required": ["arg1"],
+           },
+       },
+   }
+
+   TOOL_NAME = "my_tool"
+   TOOL_ENTRY = ToolEntry(
+       schema=MY_TOOL_SCHEMA,
+       fn=my_tool,
+   )
+   ```
+
+2. Add to `config.yaml` under the model's `tools:` list
+
+That's it! The tool will be automatically discovered.

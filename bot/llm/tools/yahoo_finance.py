@@ -105,3 +105,14 @@ YAHOO_FINANCE_SCHEMA = {
         },
     },
 }
+
+
+# ── Dynamic tool registration ────────────────────────────────────────────────
+
+from bot.llm.tools._types import ToolEntry
+
+TOOL_NAME = "get_market_prices"
+TOOL_ENTRY = ToolEntry(
+    schema=YAHOO_FINANCE_SCHEMA,
+    fn=get_market_prices,
+)

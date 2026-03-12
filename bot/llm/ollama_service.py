@@ -113,7 +113,15 @@ class OllamaService:
                     think=think,
                 )
             except Exception as e:
-                if enabled_schemas and "error parsing tool call" in str(e):
+                error_str = str(e)
+                error_type = type(e).__name__
+                
+                # Handle connection errors with retry
+                if "Connection" in error_type or "ECONNREFUSED" in error_str or "ETIMEDOUT" in error_str:
+                    logging.warning(f"OllamaService: Connection failed - {error_type}: {error_str[:100]}")
+                    raise ConnectionError(f"Failed to connect to Ollama at {self.host}. Please check that Ollama is running.") from e
+                
+                if enabled_schemas and "error parsing tool call" in error_str:
                     logging.warning(
                         "OllamaService: model produced unparseable tool call "
                         "(likely model incompatibility). Retrying without tools."

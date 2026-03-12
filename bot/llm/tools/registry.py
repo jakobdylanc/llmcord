@@ -1,24 +1,25 @@
 """
 bot/llm/tools/registry.py
 
-Single source of truth for ALL bot tools.
-Each ToolEntry bundles: the callable, the OpenAI-format schema, and an optional formatter.
+Dynamic tool registry with auto-discovery from bot/llm/tools/ directory.
 
 Adding a new tool only requires:
-  1. Create bot/llm/tools/my_tool.py  (fn + SCHEMA)
-  2. Import and add a ToolEntry below in _ENTRIES
-  3. Add the tool name to config.yaml under the model's `tools:` list
+  1. Create bot/llm/tools/my_tool.py with TOOL_NAME and TOOL_ENTRY
+  2. Add the tool name to config.yaml under the model's `tools:` list
 
-See SKILLS.md at the repo root for full documentation.
+No manual registration needed - tools are auto-discovered!
 """
 
 from __future__ import annotations
 
+import importlib
+import inspect
 import json
 import logging
-from dataclasses import dataclass
+import os
 from typing import Any, Callable, List
 
+from ._types import ToolEntry
 from .web_search import (
     WEB_SEARCH_SCHEMA,
     brave_web_search,
@@ -27,15 +28,6 @@ from .web_search import (
 from .visuals_core import VISUALS_CORE_SCHEMA, generate_visualization
 from .yahoo_finance import YAHOO_FINANCE_SCHEMA, get_market_prices
 from .google_tools import GOOGLE_TOOLS_SCHEMA, google_tools_wrapper
-
-
-# ── ToolEntry ─────────────────────────────────────────────────────────────────
-
-@dataclass
-class ToolEntry:
-    schema: dict                       # OpenAI-format schema sent to the model
-    fn: Callable | None = None         # called locally when model invokes this tool
-    formatter: Callable | None = None  # optional: formatter(result, args) -> str
 
 
 # ── Formatters ────────────────────────────────────────────────────────────────
@@ -56,7 +48,7 @@ def _visuals_core(viz_type: str, data: str, title: str = "") -> str:
     return generate_visualization(viz_type=viz_type, title=title, **kwargs)
 
 
-# ── Static entries (schema + callable) ────────────────────────────────────────
+# ── Static entries (legacy format - for backward compatibility) ───────────────
 
 _ENTRIES: dict[str, ToolEntry] = {
     "web_search": ToolEntry(
@@ -79,6 +71,75 @@ _ENTRIES: dict[str, ToolEntry] = {
 }
 
 
+# ── Dynamic tool discovery ────────────────────────────────────────────────────
+
+_TOOLS_DIR = os.path.dirname(__file__)
+
+
+def _discover_tools() -> dict[str, ToolEntry]:
+    """
+    Auto-discover tools from Python files in the tools directory.
+    Each tool file should define TOOL_NAME and TOOL_ENTRY.
+    
+    Error handling: malformed modules are skipped with warnings.
+    """
+    discovered: dict[str, ToolEntry] = {}
+    
+    for filename in os.listdir(_TOOLS_DIR):
+        if not filename.endswith('.py') or filename.startswith('_'):
+            continue
+        
+        module_name = filename[:-3]  # remove .py
+        if module_name in ('registry',):  # skip self
+            continue
+        
+        try:
+            # Dynamic import
+            module = importlib.import_module(f'.{module_name}', package='bot.llm.tools')
+            
+            # Look for TOOL_NAME and TOOL_ENTRY
+            tool_name = getattr(module, 'TOOL_NAME', None)
+            tool_entry = getattr(module, 'TOOL_ENTRY', None)
+            
+            if tool_name and tool_entry:
+                if not isinstance(tool_entry, ToolEntry):
+                    logging.warning(
+                        f"Tool '{module_name}': TOOL_ENTRY is not a ToolEntry instance, skipping"
+                    )
+                    continue
+                discovered[tool_name] = tool_entry
+                logging.info(f"Discovered tool: {tool_name} from {filename}")
+            else:
+                logging.debug(
+                    f"Tool '{module_name}': missing TOOL_NAME or TOOL_ENTRY, skipping"
+                )
+                
+        except Exception as e:
+            logging.warning(f"Failed to load tool module '{module_name}': {e}")
+    
+    return discovered
+
+
+# Cache for discovered tools
+_discovered_tools: dict[str, ToolEntry] | None = None
+
+
+def _get_discovered_tools() -> dict[str, ToolEntry]:
+    """Get cached discovered tools, or discover them on first call."""
+    global _discovered_tools
+    if _discovered_tools is None:
+        _discovered_tools = _discover_tools()
+    return _discovered_tools
+
+
+def reload_tools() -> None:
+    """Force reload of tool registry (useful for testing)."""
+    global _discovered_tools
+    _discovered_tools = None
+    _get_discovered_tools()
+    logging.info("Tool registry reloaded")
+
+
 # ── Registry builders ─────────────────────────────────────────────────────────
 
 def get_tools() -> dict[str, ToolEntry]:
@@ -91,11 +152,23 @@ def get_tools() -> dict[str, ToolEntry]:
 
 def build_tool_registry() -> dict[str, ToolEntry]:
     """
-    Return a fully-wired tool registry.
-    web_search uses Brave API (requires BRAVE_API_KEY in .env). Works with all providers.
+    Return a fully-wired tool registry with auto-discovered tools.
+    Combines legacy static entries with dynamically discovered tools.
+    Tools from files take precedence over legacy entries.
     """
-    logging.info("ToolRegistry: web_search → Brave API (works with all providers)")
-    return dict(_ENTRIES)
+    # Start with discovered tools (they take precedence)
+    registry = dict(_get_discovered_tools())
+    
+    # Add legacy entries for any tools not already discovered
+    for name, entry in _ENTRIES.items():
+        if name not in registry:
+            registry[name] = entry
+    
+    # Log available tools
+    tool_names = list(registry.keys())
+    logging.info(f"ToolRegistry: {len(registry)} tools available: {tool_names}")
+    
+    return registry
 
 
 def build_brave_registry() -> dict[str, ToolEntry]:
@@ -115,7 +188,8 @@ def get_openai_tools(tool_names: List[str] | None) -> List[dict[str, Any]]:
     """
     if not tool_names:
         return []
-    return [_ENTRIES[n].schema for n in tool_names if n in _ENTRIES]
+    registry = build_tool_registry()
+    return [registry[n].schema for n in tool_names if n in registry]
 
 
 # ── Result formatter ──────────────────────────────────────────────────────────
