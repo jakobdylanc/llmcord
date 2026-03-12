@@ -56,8 +56,8 @@ flowchart LR
   - Description: Builds tool registry (Brave for web_search), injects skill docs from `bot/llm/tools/skills/*.md`, runs chat with optional tools.
 
 - **tools/**:
-  - `registry.py`: Single source of truth for all tools (ToolEntry, build_tool_registry, execute_tool_call).
-  - `web_search.py`: Brave Search API for web_search; schema and formatter.
+  - `registry.py`: Tool registry (ToolEntry, build_tool_registry, execute_tool_call, reload_tools). Auto-discovers tools from Python modules.
+  - `web_search.py`: Brave Search API for web_search.
   - `visuals_core.py`: ASCII/Markdown visualizations (table, chart, heatmap, timeline, flowchart, tree).
   - `yahoo_finance.py`: Yahoo Finance closing prices via yfinance.
   - `google_tools.py`: Gmail + Calendar access via Google API (read-only).
@@ -94,11 +94,13 @@ flowchart LR
 | **bot/llm/ollama_service.py** | `OllamaService(host)` | Client for Ollama; builds tool registry (Brave for web_search). |
 | | `OllamaService.run(messages, model, enable_tools, think, max_tool_chars)` | Chat with optional tools; injects skill docs; returns content, thinking, tool_results, messages. |
 | **bot/llm/tools/registry.py** | `ToolEntry` (dataclass) | schema, fn, formatter. |
-| | `build_tool_registry()` | Full registry; web_search uses Brave API. |
-| | `build_brave_registry()` | Alias for build_tool_registry() (Brave web search). |
+| | `build_tool_registry()` | Full registry with auto-discovered tools. |
+| | `build_brave_registry()` | Alias for build_tool_registry(). |
 | | `get_openai_tools(tool_names)` | Return OpenAI-format tool schemas for given names. |
 | | `execute_tool_call(name, args, registry, max_chars)` | Run tool by name, return formatted string. |
 | | `format_tool_result(entry, result, args)` | Format via entry.formatter or str(). |
+| | `reload_tools()` | Force reload of tool registry (for testing). |
+| | `_discover_tools()` | Internal: scan tools/ directory for modules with TOOL_NAME/TOOL_ENTRY. |
 | **bot/llm/tools/web_search.py** | `brave_web_search(query)` | Call Brave Search API; rate-limited (1 req/s). |
 | | `format_brave_results(result, user_search)` | Format Brave JSON for model. |
 | | `WEB_SEARCH_SCHEMA` | OpenAI-format tool schema. |

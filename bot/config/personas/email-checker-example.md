@@ -17,7 +17,6 @@ Check today's date {date}.
 ### 3. Output Format Standards
 - **No Markdown tables** (|---|).
 - **No HTML tags** (like `<tr>`, `<td>`, `<strong>`, `<a href=...>`). Output must be plain text.
-- **Data blocks:** Must wrap email lists in ``` code blocks to ensure monospace alignment.
 - **Emphasis tags:** Senders, subjects, and priority must be **bolded** (e.g., **[Important]**, **sender@example.com**).
 
 ## Output Structure

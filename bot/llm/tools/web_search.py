@@ -76,6 +76,13 @@ def format_brave_results(result: dict, user_search: str) -> str:
     return "\n".join(output).rstrip()
 
 
+# ── Formatter wrapper for dynamic registration ────────────────────────────────
+
+def _fmt_brave_search(result: dict, args: dict) -> str:
+    """Wrapper for dynamic tool registration."""
+    return format_brave_results(result, user_search=args.get("query", ""))
+
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 WEB_SEARCH_SCHEMA = {
@@ -92,3 +99,15 @@ WEB_SEARCH_SCHEMA = {
         },
     },
 }
+
+
+# ── Dynamic tool registration ────────────────────────────────────────────────
+
+from bot.llm.tools._types import ToolEntry
+
+TOOL_NAME = "web_search"
+TOOL_ENTRY = ToolEntry(
+    schema=WEB_SEARCH_SCHEMA,
+    fn=brave_web_search,
+    formatter=_fmt_brave_search,
+)

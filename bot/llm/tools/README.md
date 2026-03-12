@@ -3,12 +3,15 @@
 This folder contains all bot tools. Each tool is self-contained: one `.py` file
 with the callable + schema, and one `skills/*.md` file with the AI-readable skill doc.
 
+Tools are **auto-discovered** — no manual registration needed!
+
 ## Structure
 
 ```
 bot/llm/tools/
 ├── README.md              ← you are here (architecture + how to add tools)
-├── registry.py            ← single source of truth: ToolEntry registry
+├── __init__.py            ← lazy loading, auto-discovery
+├── registry.py            ← tool registry with auto-discovery
 ├── web_search.py          ← web_search (Brave API) callable + schema
 ├── visuals_core.py        ← visuals_core callable + schema
 ├── yahoo_finance.py       ← stock/index prices from Yahoo Finance
@@ -26,14 +29,14 @@ bot/llm/tools/
 config.yaml tools: ["web_search"]
         │
         ▼
-registry.py  _ENTRIES["web_search"]  ←── ToolEntry(schema, fn, formatter)
+registry.py  auto-discovers tools from .py files
+        │
+        ▼
+ToolEntry(schema, fn, formatter)
         ├── .schema  ──► sent to model via client.chat(tools=[...])
         ├── .fn      ──► called locally when model requests the tool
         └── .formatter ► formats raw result before sending back as tool message
 ```
-
-`ollama_service.py` calls `build_tool_registry()` — it has **zero hardcoded
-tool names**. Web search uses Brave API for all providers. Adding a tool never requires touching it.
 
 ## How to add a new tool
 
@@ -42,6 +45,8 @@ tool names**. Web search uses Brave API for all providers. Adding a tool never r
 `bot/llm/tools/my_tool.py`:
 
 ```python
+from bot.llm.tools.registry import ToolEntry
+
 def my_tool(param1: str, param2: int = 0) -> str:
     """Your tool logic here."""
     return str(result)
@@ -60,28 +65,24 @@ MY_TOOL_SCHEMA = {
         },
     },
 }
+
+# Auto-discovery exports
+TOOL_NAME = "my_tool"
+TOOL_ENTRY = ToolEntry(
+    schema=MY_TOOL_SCHEMA,
+    fn=my_tool,
+)
 ```
 
 > Use only JSON-native types (`string`, `integer`, `boolean`, `array`, `object`).
 > Python's `Any` will crash Ollama's introspection.
 
-### 2. Register in registry.py
-
-```python
-from .my_tool import my_tool, MY_TOOL_SCHEMA
-
-_ENTRIES: dict[str, ToolEntry] = {
-    ...
-    "my_tool": ToolEntry(schema=MY_TOOL_SCHEMA, fn=my_tool),
-}
-```
-
-### 3. Write a skill doc
+### 2. Write a skill doc (optional but recommended)
 
 `bot/llm/tools/skills/my_tool.md` — see existing skill files for the format.
 The AI reads this to know when and how to invoke the tool correctly.
 
-### 4. Add to config.yaml
+### 3. Add to config.yaml
 
 ```yaml
 models:
@@ -89,7 +90,7 @@ models:
     tools: ["web_search", "my_tool"]
 ```
 
-**Done.** No other files need to change.
+**Done.** The tool is automatically discovered. No other files need to change.
 
 ## ToolEntry dataclass
 

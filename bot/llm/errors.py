@@ -46,7 +46,9 @@ def parse_error_message(error: Exception) -> str:
     if "403" in s or t == "Forbidden":
         return "❌ Forbidden: You don't have permission to access this resource."
     if "Connection" in t or "ECONNREFUSED" in s or "ETIMEDOUT" in s:
-        return "❌ Connection Error: Unable to connect to the API provider."
+        if "Ollama" in s or "ollama" in s:
+            return "❌ Connection Error: Unable to connect to Ollama. Please ensure Ollama is running (ollama serve) and accessible."
+        return "❌ Connection Error: Unable to connect to the API provider. Check network and API endpoint."
     return f"❌ {t}: {s.split(chr(10))[0][:100]}"
 
 
