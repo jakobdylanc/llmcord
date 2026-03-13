@@ -5,9 +5,11 @@
 !.gitignore
 
 !*.md
+memory.md
 !*.py
 
 !Dockerfile
 !config-example.yaml
 !docker-compose.yaml
 !requirements.txt
+
