@@ -1,5 +1,37 @@
 # Discord Spec
 
+## Purpose
+Defines Discord bot integration, including message handling, slash commands, and error handling.
+
+## Requirements
+### Requirement: Bot authenticates with Discord
+The bot SHALL authenticate using the configured bot_token and require MESSAGE CONTENT INTENT.
+
+#### Scenario: Bot authentication
+- **WHEN** bot starts with valid token
+- **THEN** it connects to Discord and registers slash commands
+
+### Requirement: Message handling with reply system
+The bot SHALL respond to messages that mention it or reply to bot messages, building conversation from reply chain.
+
+#### Scenario: Message handling
+- **WHEN** user mentions bot or replies to bot message
+- **THEN** bot builds conversation and streams LLM response
+
+### Requirement: Slash commands for control
+The bot SHALL provide slash commands for model switching, conversation clearing, persona management, skill listing, task management, and config reload.
+
+#### Scenario: Slash commands
+- **WHEN** user invokes /model, /clear, /persona, /skill, /task, or /refresh
+- **THEN** bot executes the corresponding action
+
+### Requirement: Error handling with admin notifications
+The bot SHALL notify admins of errors and handle slash command errors gracefully.
+
+#### Scenario: Error handling
+- **WHEN** an error occurs
+- **THEN** admin is notified via DM and user sees localized error message
+
 ## Bot Setup
 
 - Uses `discord.py` with `Intents.members` and `Intents.message_content`

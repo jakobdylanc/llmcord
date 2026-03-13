@@ -1,5 +1,23 @@
 # Project Spec
 
+## Purpose
+Defines the overall project structure, modules, and data models for the Discord LLM bot.
+
+## Requirements
+### Requirement: Module structure defines components
+The project SHALL have distinct modules for entry point, config, LLM, tools, and Discord integration.
+
+#### Scenario: Module organization
+- **WHEN** codebase is examined
+- **THEN** it contains: llmcord.py (entry), bot/config/* (config), bot/llm/* (LLM), bot/llm/tools/* (tools), bot/discord/* (Discord)
+
+### Requirement: Data models define structures
+The system SHALL define data models for Config, ToolEntry, and ScheduledTask.
+
+#### Scenario: Data models
+- **WHEN** code is parsed
+- **THEN** Config, ToolEntry, and ScheduledTask structures are available
+
 ## Overview
 
 Discord bot that streams LLM responses, supports multiple providers, tools, personas, and scheduled tasks.
