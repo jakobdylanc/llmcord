@@ -1,5 +1,28 @@
 # Config Spec
 
+## Purpose
+Defines the configuration file structure for the Discord bot, including providers, models, personas, tasks, and permissions.
+
+## Requirements
+### Requirement: Config schema defines required structure
+The config SHALL have these top-level keys:
+- `bot_token`: Discord bot token
+- `client_id`: Discord client ID (optional)
+- `providers`: LLM provider configurations
+- `models`: Model configurations with provider/model format
+- Optional: `persona`, `system_prompt`, `fallback_models`, `scheduled_tasks`, `permissions`, `status_message`, `max_text`, `max_images`, `max_messages`, `use_plain_responses`, `show_embed_color`, `allow_dms`
+
+#### Scenario: Config structure
+- **WHEN** AI reads config.yaml
+- **THEN** it can parse: providers, models, bot_token, persona, system_prompt, fallback_models, scheduled_tasks, permissions
+
+### Requirement: Config validation ensures required fields
+The system SHALL validate config and fail startup if required fields are missing.
+
+#### Scenario: Validation
+- **WHEN** config is loaded
+- **THEN** validator.py checks: providers exists, models exists, each model has valid provider
+
 ## Config File
 
 Default: `config.yaml` (or path from CONFIG_PATH env)

@@ -1,5 +1,37 @@
 # Tool Spec
 
+## Purpose
+Defines the tool system including ToolEntry contract, registry, available tools, and how to add new tools.
+
+## Requirements
+### Requirement: ToolEntry contract
+Each tool SHALL have schema, fn (function), and formatter components.
+
+#### Scenario: ToolEntry
+- **WHEN** tool is registered
+- **THEN** it has schema, fn, and formatter properties
+
+### Requirement: Tool registry
+The system SHALL maintain a registry of available tools accessible by name.
+
+#### Scenario: Registry
+- **WHEN** tool name is requested
+- **THEN** registry returns corresponding ToolEntry
+
+### Requirement: Available tools
+The system SHALL provide web_search, visuals_core, get_market_prices, and google_tools.
+
+#### Scenario: Available tools
+- **WHEN** tools are needed
+- **THEN** these tools are registered and callable
+
+### Requirement: Adding new tools
+New tools SHALL be added by creating a Python file with schema, function, and formatter.
+
+#### Scenario: Add new tool
+- **WHEN** developer creates tool file and registers it
+- **THEN** tool is available via get_openai_tools and execute_tool_call
+
 ## ToolEntry Contract
 
 ```python
