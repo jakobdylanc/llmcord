@@ -32,9 +32,34 @@ STREAMING_INDICATOR = " ⚪"
 EDIT_DELAY_SECONDS = 1
 
 MAX_MESSAGE_NODES = 500
+MAX_MESSAGES_SANITY = 500
 
 SUPPORTED_IMAGE_TYPES = ("image/jpeg", "image/png")
 
+SESSION_GAP_SECONDS = 2 * 60 * 60  # 2 hours
+
+
+# ---------------------------------------------------------------------------
+# Token estimation
+# ---------------------------------------------------------------------------
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token."""
+    return len(text) // 4
+
+
+def message_token_estimate(msg_dict: dict) -> int:
+    """Estimate tokens for an OpenAI message dict."""
+    content = msg_dict["content"]
+    if isinstance(content, str):
+        return estimate_tokens(content)
+    # list of content parts (text + images)
+    return sum(estimate_tokens(p["text"]) for p in content if p.get("type") == "text")
+
+
+# ---------------------------------------------------------------------------
+# Image handling
+# ---------------------------------------------------------------------------
 
 def _ensure_jpeg_or_png(content_type: str, data: bytes, max_size: int = 1024) -> tuple[str, bytes]:
     """Convert image to JPEG if it's not already JPEG or PNG, and cap resolution."""
@@ -46,9 +71,15 @@ def _ensure_jpeg_or_png(content_type: str, data: bytes, max_size: int = 1024) ->
         return content_type, data
     fmt = "PNG" if content_type == "image/png" else "JPEG"
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, format=fmt)
+    if fmt == "JPEG":
+        img = img.convert("RGB")
+    img.save(buf, format=fmt)
     return f"image/{fmt.lower()}", buf.getvalue()
 
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
 def get_config(filename: str = "config.yaml") -> dict[str, Any]:
     with open(filename, encoding="utf-8") as file:
@@ -61,49 +92,56 @@ curr_model = next(iter(config["models"]))
 msg_nodes: dict[int, "MsgNode"] = {}
 last_task_time = 0
 active_channels: set[int] = set()
+channel_locks: dict[int, asyncio.Lock] = {}
 
+
+# ---------------------------------------------------------------------------
 # Memory system
-MEMORY_FILE = Path(__file__).parent / "memory.md"
-SWEEP_STATE_FILE = Path(__file__).parent / "sweep_state.json"
+# ---------------------------------------------------------------------------
 
-SESSION_GAP_SECONDS = 2 * 60 * 60  # 2 hours
+class MemoryStore:
+    """Encapsulates memory storage and sweep state. Swap this class to change backends."""
+
+    def __init__(self, memory_file: Path, sweep_state_file: Path):
+        self._memory_file = memory_file
+        self._sweep_state_file = sweep_state_file
+        self._sweep_lock = asyncio.Lock()
+
+    def load(self) -> str:
+        try:
+            return self._memory_file.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return ""
+
+    def save(self, content: str) -> None:
+        self._memory_file.write_text(content, encoding="utf-8")
+
+    async def get_last_sweep_time(self, channel_id: int) -> datetime | None:
+        async with self._sweep_lock:
+            state = self._load_sweep_state()
+            ts = state.get(str(channel_id))
+            return datetime.fromisoformat(ts) if ts else None
+
+    async def set_last_sweep_time(self, channel_id: int, dt: datetime) -> None:
+        async with self._sweep_lock:
+            state = self._load_sweep_state()
+            state[str(channel_id)] = dt.isoformat()
+            self._save_sweep_state(state)
+
+    def _load_sweep_state(self) -> dict[str, str]:
+        try:
+            return json.loads(self._sweep_state_file.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def _save_sweep_state(self, state: dict[str, str]) -> None:
+        self._sweep_state_file.write_text(json.dumps(state), encoding="utf-8")
 
 
-def load_memory() -> str:
-    try:
-        return MEMORY_FILE.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
-
-
-def save_memory(content: str) -> None:
-    MEMORY_FILE.write_text(content, encoding="utf-8")
-
-
-def load_sweep_state() -> dict[str, str]:
-    """Load per-channel last sweep timestamps. Keys are channel ID strings, values are ISO timestamps."""
-    try:
-        return json.loads(SWEEP_STATE_FILE.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def save_sweep_state(state: dict[str, str]) -> None:
-    SWEEP_STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
-
-
-def get_last_sweep_time(channel_id: int) -> datetime | None:
-    state = load_sweep_state()
-    ts = state.get(str(channel_id))
-    if ts:
-        return datetime.fromisoformat(ts)
-    return None
-
-
-def set_last_sweep_time(channel_id: int, dt: datetime) -> None:
-    state = load_sweep_state()
-    state[str(channel_id)] = dt.isoformat()
-    save_sweep_state(state)
+memory_store = MemoryStore(
+    memory_file=Path(__file__).parent / "memory.md",
+    sweep_state_file=Path(__file__).parent / "sweep_state.json",
+)
 
 
 SWEEP_PROMPT = """\
@@ -152,16 +190,17 @@ SUMMARY: [brief natural language description of what changed]
 async def collect_previous_session(channel: discord.abc.Messageable, before_msg: discord.Message, bot_user: discord.User) -> list[dict[str, str]]:
     """Fetch the most recent previous session from Discord history.
 
-    Walks backwards from before_msg. The first 2hr+ gap marks the end of the previous session.
-    Continues collecting until another 2hr+ gap or the last sweep time is reached.
+    Walks backwards from before_msg. The first 2hr+ gap marks the boundary between
+    the current session and the previous one. Once past that gap, collects messages
+    until another 2hr+ gap or the last sweep time is reached.
     Returns messages in chronological order.
     """
-    last_sweep = get_last_sweep_time(channel.id)
+    last_sweep = await memory_store.get_last_sweep_time(channel.id)
     session_msgs: list[dict[str, str]] = []
     found_session_start = False
     prev_time = before_msg.created_at
 
-    async for msg in channel.history(limit=500, before=before_msg):
+    async for msg in channel.history(limit=MAX_MESSAGES_SANITY, before=before_msg):
         if msg.type not in (discord.MessageType.default, discord.MessageType.reply):
             continue
 
@@ -172,11 +211,15 @@ async def collect_previous_session(channel: discord.abc.Messageable, before_msg:
         gap = (prev_time - msg.created_at).total_seconds()
 
         if not found_session_start:
-            if gap < SESSION_GAP_SECONDS and not session_msgs:
-                pass
-            found_session_start = True
+            # Still in the current session — skip until we cross a 2hr+ gap
+            if gap >= SESSION_GAP_SECONDS:
+                found_session_start = True
+            else:
+                prev_time = msg.created_at
+                continue
 
         if found_session_start:
+            # We're now in the previous session — collect until another gap
             if session_msgs and gap >= SESSION_GAP_SECONDS:
                 break
 
@@ -195,7 +238,7 @@ async def run_memory_sweep(channel: discord.abc.Messageable, session_msgs: list[
         await channel.send("🧠 Memory reviewed — no new messages to process.")
         return
 
-    memory_content = load_memory()
+    memory_content = memory_store.load()
     messages_text = "\n".join(f"[{m['author']}]: {m['content']}" for m in session_msgs)
 
     prompt = SWEEP_PROMPT.replace("{memory}", memory_content).replace("{messages}", messages_text)
@@ -227,9 +270,9 @@ async def run_memory_sweep(channel: discord.abc.Messageable, session_msgs: list[
             memory_lines.pop()
 
         new_memory = "\n".join(memory_lines) + "\n"
-        save_memory(new_memory)
+        memory_store.save(new_memory)
 
-        set_last_sweep_time(channel.id, datetime.now(timezone.utc))
+        await memory_store.set_last_sweep_time(channel.id, datetime.now(timezone.utc))
 
         if summary_line:
             await channel.send(f"🧠 Memory updated — {summary_line}")
@@ -306,6 +349,10 @@ async def populate_node(node: MsgNode, msg: discord.Message) -> None:
 
     if node.role == "user" and (node.text or node.images):
         node.text = f"<@{msg.author.id}>: {node.text}"
+
+    if msg.reactions:
+        reaction_strs = [f"{r.emoji} x{r.count}" for r in msg.reactions]
+        node.text += f"\n[Reactions: {', '.join(reaction_strs)}]"
 
     node.has_bad_attachments = len(msg.attachments) > len(good_attachments)
 
@@ -471,13 +518,12 @@ async def check_interjection(new_msg: discord.Message, cfg: dict) -> bool:
 
 async def build_chain_thread(
     new_msg: discord.Message,
-    max_messages: int,
     max_text: int,
     max_images: int,
+    max_context_tokens: int,
     nodes_needing_descriptions: list[MsgNode],
 ) -> tuple[list[dict], set[str], datetime]:
-    """Build the message chain from a thread's history."""
-    messages: list[dict] = []
+    """Build the message chain from a thread's history, limited by token budget."""
     warnings: set[str] = set()
     thread_msgs: list[discord.Message] = []
 
@@ -489,14 +535,12 @@ async def build_chain_thread(
     except (discord.NotFound, discord.HTTPException):
         logging.exception("Error fetching thread starter message")
 
-    async for msg in new_msg.channel.history(limit=max_messages, oldest_first=True):
+    async for msg in new_msg.channel.history(limit=MAX_MESSAGES_SANITY, oldest_first=True):
         if msg.type in (discord.MessageType.default, discord.MessageType.reply):
             thread_msgs.append(msg)
 
-    if len(thread_msgs) > max_messages:
-        thread_msgs = thread_msgs[-max_messages:]
-        warnings.add(f"⚠️ Only using last {max_messages} message{'' if max_messages == 1 else 's'}")
-
+    # Build all message dicts
+    all_built: list[tuple[dict, discord.Message]] = []
     for msg in thread_msgs:
         node = msg_nodes.setdefault(msg.id, MsgNode())
         async with node.lock:
@@ -504,26 +548,38 @@ async def build_chain_thread(
         result, w = build_message_content(node, max_text, max_images, nodes_needing_descriptions)
         warnings |= w
         if result:
-            messages.append(result)
+            all_built.append((result, msg))
 
-    earliest = thread_msgs[0].created_at if thread_msgs else new_msg.created_at
+    # Trim oldest messages to fit token budget
+    total_tokens = sum(message_token_estimate(m) for m, _ in all_built)
+    original_count = len(all_built)
+    while all_built and total_tokens > max_context_tokens:
+        removed, _ = all_built.pop(0)
+        total_tokens -= message_token_estimate(removed)
+
+    if len(all_built) < original_count:
+        warnings.add(f"⚠️ Trimmed to last {len(all_built)} messages (~{total_tokens:,} tokens)")
+
+    messages = [m for m, _ in all_built]
+    earliest = all_built[0][1].created_at if all_built else new_msg.created_at
     return messages, warnings, earliest
 
 
 async def build_chain_dm(
     new_msg: discord.Message,
-    max_messages: int,
     max_text: int,
     max_images: int,
+    max_context_tokens: int,
     nodes_needing_descriptions: list[MsgNode],
 ) -> tuple[list[dict], set[str], datetime]:
-    """Build the message chain by walking the reply chain (DMs)."""
+    """Build the message chain by walking the reply chain (DMs), limited by token budget."""
     messages: list[dict] = []
     warnings: set[str] = set()
     earliest = new_msg.created_at
     curr_msg = new_msg
+    estimated_tokens = 0
 
-    while curr_msg is not None and len(messages) < max_messages:
+    while curr_msg is not None and len(messages) < MAX_MESSAGES_SANITY:
         node = msg_nodes.setdefault(curr_msg.id, MsgNode())
 
         async with node.lock:
@@ -533,10 +589,15 @@ async def build_chain_dm(
         result, w = build_message_content(node, max_text, max_images, nodes_needing_descriptions)
         warnings |= w
         if result:
+            msg_tokens = message_token_estimate(result)
+            if messages and estimated_tokens + msg_tokens > max_context_tokens:
+                warnings.add(f"⚠️ Stopped at {len(messages)} messages (~{estimated_tokens:,} tokens)")
+                break
+            estimated_tokens += msg_tokens
             messages.append(result)
             earliest = curr_msg.created_at
 
-        if node.fetch_parent_failed or (node.parent_msg is not None and len(messages) == max_messages):
+        if node.fetch_parent_failed:
             warnings.add(f"⚠️ Only using last {len(messages)} message{'' if len(messages) == 1 else 's'}")
 
         curr_msg = node.parent_msg
@@ -547,9 +608,9 @@ async def build_chain_dm(
 async def build_chain_channel(
     new_msg: discord.Message,
     cfg: dict,
-    max_messages: int,
     max_text: int,
     max_images: int,
+    max_context_tokens: int,
     nodes_needing_descriptions: list[MsgNode],
 ) -> tuple[list[dict], set[str], datetime]:
     """Build the message chain from recent channel history with gap/token cutoffs."""
@@ -557,13 +618,12 @@ async def build_chain_channel(
     warnings: set[str] = set()
 
     context_gap_minutes = cfg.get("context_gap_minutes", 10)
-    max_context_tokens = cfg.get("max_context_tokens", 10000)
 
     recent_msgs: list[discord.Message] = []
     estimated_tokens = 0
     prev_msg_time = new_msg.created_at
 
-    async for msg in new_msg.channel.history(limit=max_messages, before=new_msg):
+    async for msg in new_msg.channel.history(limit=MAX_MESSAGES_SANITY, before=new_msg):
         if msg.type not in (discord.MessageType.default, discord.MessageType.reply):
             continue
 
@@ -571,7 +631,7 @@ async def build_chain_channel(
         if time_gap > context_gap_minutes:
             break
 
-        msg_tokens = len(msg.content) / 4
+        msg_tokens = estimate_tokens(msg.content)
         if estimated_tokens + msg_tokens > max_context_tokens:
             break
 
@@ -598,9 +658,6 @@ async def build_chain_channel(
         messages.append(result)
 
     earliest = recent_msgs[-1].created_at if recent_msgs else new_msg.created_at
-
-    if len(recent_msgs) >= max_messages:
-        warnings.add(f"⚠️ Only using last {max_messages} message{'s' if max_messages != 1 else ''}")
 
     return messages, warnings, earliest
 
@@ -641,7 +698,7 @@ def build_system_prompt(cfg: dict) -> str | None:
     now = datetime.now().astimezone()
     system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
 
-    memory_content = load_memory()
+    memory_content = memory_store.load()
     if memory_content.strip():
         system_prompt += (
             "\n\nYou have a persistent memory system. Below are your current memories. "
@@ -815,6 +872,46 @@ async def cleanup_old_nodes() -> None:
 # Discord commands and events
 # ---------------------------------------------------------------------------
 
+@discord_bot.tree.command(name="info", description="Estimate the number of tokens in the current chat context")
+async def info_command(interaction: discord.Interaction) -> None:
+    cfg = await asyncio.to_thread(get_config)
+    context_gap_minutes = cfg.get("context_gap_minutes", 10)
+    max_context_tokens = cfg.get("max_context_tokens", 10000)
+
+    channel = interaction.channel
+    estimated_tokens = 0
+    msg_count = 0
+    prev_msg_time = datetime.now(timezone.utc)
+    earliest_time = prev_msg_time
+
+    async for msg in channel.history(limit=MAX_MESSAGES_SANITY):
+        if msg.type not in (discord.MessageType.default, discord.MessageType.reply):
+            continue
+
+        time_gap = (prev_msg_time - msg.created_at).total_seconds() / 60
+        if msg_count > 0 and time_gap > context_gap_minutes:
+            break
+
+        msg_tokens = estimate_tokens(msg.content)
+        if msg_count > 0 and estimated_tokens + msg_tokens > max_context_tokens:
+            break
+
+        estimated_tokens += msg_tokens
+        msg_count += 1
+        earliest_time = msg.created_at
+        prev_msg_time = msg.created_at
+
+    earliest_ts = int(earliest_time.timestamp())
+    await interaction.response.send_message(
+        f"**Context estimate:**\n"
+        f"Messages: {msg_count}\n"
+        f"Estimated tokens: ~{int(estimated_tokens):,}\n"
+        f"Earliest message: <t:{earliest_ts}:R>\n"
+        f"Max context tokens: {max_context_tokens:,}",
+        ephemeral=True,
+    )
+
+
 @discord_bot.tree.command(name="model", description="View or switch the current model")
 async def model_command(interaction: discord.Interaction, model: str) -> None:
     global curr_model
@@ -871,76 +968,79 @@ async def on_message(new_msg: discord.Message) -> None:
     if not is_mentioned and not await check_interjection(new_msg, cfg):
         return
 
-    # --- Provider / model setup ---
-    provider_slash_model = curr_model
-    provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
-    provider_config = cfg["providers"][provider]
+    # --- Acquire per-channel lock to serialize responses ---
+    lock = channel_locks.setdefault(new_msg.channel.id, asyncio.Lock())
+    async with lock:
+        # --- Provider / model setup ---
+        provider_slash_model = curr_model
+        provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
+        provider_config = cfg["providers"][provider]
 
-    openai_client = AsyncOpenAI(
-        base_url=provider_config["base_url"],
-        api_key=provider_config.get("api_key", "sk-no-key-required"),
-    )
-
-    model_parameters = cfg["models"].get(provider_slash_model, None)
-    extra_headers = provider_config.get("extra_headers")
-    extra_query = provider_config.get("extra_query")
-    extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
-
-    accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
-    max_text = cfg.get("max_text", 100000)
-    max_images = cfg.get("max_images", 5) if accept_images else 0
-    max_messages = cfg.get("max_messages", 25)
-
-    # --- Build message chain ---
-    nodes_needing_descriptions: list[MsgNode] = []
-
-    if is_thread:
-        messages, user_warnings, earliest_msg_time = await build_chain_thread(
-            new_msg, max_messages, max_text, max_images, nodes_needing_descriptions,
-        )
-    elif is_dm:
-        messages, user_warnings, earliest_msg_time = await build_chain_dm(
-            new_msg, max_messages, max_text, max_images, nodes_needing_descriptions,
-        )
-    else:
-        messages, user_warnings, earliest_msg_time = await build_chain_channel(
-            new_msg, cfg, max_messages, max_text, max_images, nodes_needing_descriptions,
+        openai_client = AsyncOpenAI(
+            base_url=provider_config["base_url"],
+            api_key=provider_config.get("api_key", "sk-no-key-required"),
         )
 
-    logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
+        model_parameters = cfg["models"].get(provider_slash_model, None)
+        extra_headers = provider_config.get("extra_headers")
+        extra_query = provider_config.get("extra_query")
+        extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
 
-    # --- Memory sweep ---
-    await check_and_run_memory_sweep(
-        new_msg, openai_client, model,
-        extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body,
-    )
+        accept_images = any(x in provider_slash_model.lower() for x in VISION_MODEL_TAGS)
+        max_text = cfg.get("max_text", 100000)
+        max_images = cfg.get("max_images", 5) if accept_images else 0
+        max_context_tokens = cfg.get("max_context_tokens", 10000)
 
-    # --- System prompt ---
-    if system_prompt := build_system_prompt(cfg):
-        messages.append(dict(role="system", content=system_prompt))
+        # --- Build message chain ---
+        nodes_needing_descriptions: list[MsgNode] = []
 
-    # --- Stream response ---
-    ordered_messages = messages[::-1] if is_dm else messages
-    openai_kwargs = dict(model=model, messages=ordered_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
+        if is_thread:
+            messages, user_warnings, earliest_msg_time = await build_chain_thread(
+                new_msg, max_text, max_images, max_context_tokens, nodes_needing_descriptions,
+            )
+        elif is_dm:
+            messages, user_warnings, earliest_msg_time = await build_chain_dm(
+                new_msg, max_text, max_images, max_context_tokens, nodes_needing_descriptions,
+            )
+        else:
+            messages, user_warnings, earliest_msg_time = await build_chain_channel(
+                new_msg, cfg, max_text, max_images, max_context_tokens, nodes_needing_descriptions,
+            )
 
-    earliest_timestamp = int(earliest_msg_time.timestamp())
-    context_info = f"Earliest message: <t:{earliest_timestamp}:t>"
-    use_plain_responses = cfg.get("use_plain_responses", False)
+        logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
-    response_msgs, full_response = await stream_response(
-        new_msg, openai_client, openai_kwargs, user_warnings, context_info, use_plain_responses,
-    )
+        # --- Memory sweep ---
+        await check_and_run_memory_sweep(
+            new_msg, openai_client, model,
+            extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body,
+        )
 
-    # --- Finalize response nodes ---
-    for response_msg in response_msgs:
-        msg_nodes[response_msg.id].text = full_response
-        msg_nodes[response_msg.id].lock.release()
+        # --- System prompt & message ordering ---
+        ordered_messages = messages[::-1] if is_dm else messages
+        if system_prompt := build_system_prompt(cfg):
+            ordered_messages.insert(0, dict(role="system", content=system_prompt))
 
-    # --- Cache image descriptions ---
-    await cache_image_descriptions(
-        nodes_needing_descriptions, openai_client, model, max_images,
-        extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body,
-    )
+        # --- Stream response ---
+        openai_kwargs = dict(model=model, messages=ordered_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
+
+        earliest_timestamp = int(earliest_msg_time.timestamp())
+        context_info = f"Earliest message: <t:{earliest_timestamp}:t>"
+        use_plain_responses = cfg.get("use_plain_responses", False)
+
+        response_msgs, full_response = await stream_response(
+            new_msg, openai_client, openai_kwargs, user_warnings, context_info, use_plain_responses,
+        )
+
+        # --- Finalize response nodes ---
+        for response_msg in response_msgs:
+            msg_nodes[response_msg.id].text = full_response
+            msg_nodes[response_msg.id].lock.release()
+
+        # --- Cache image descriptions ---
+        await cache_image_descriptions(
+            nodes_needing_descriptions, openai_client, model, max_images,
+            extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body,
+        )
 
     # --- Cleanup old nodes ---
     await cleanup_old_nodes()
