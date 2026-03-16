@@ -176,6 +176,8 @@ async def run_memory_sweep(
         await channel.send("🧠 Memory reviewed — no new messages to process.")
         return
 
+    await channel.send("🧠 Memory formation in progress...")
+
     memory_content = memory_store.load()
     messages_text = "\n".join(f"[{m['author']}]: {m['content']}" for m in session_msgs)
 
