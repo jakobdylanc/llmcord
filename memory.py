@@ -7,6 +7,12 @@ from pathlib import Path
 import discord
 from openai import AsyncOpenAI
 
+from semantic_memory import (
+    load_core_memory,
+    get_active_memories,
+    execute_sweep_operations,
+)
+
 SESSION_GAP_SECONDS = 2 * 60 * 60  # 2 hours
 MAX_MESSAGES_SANITY = 500
 
@@ -65,42 +71,61 @@ memory_store = MemoryStore(
 # ---------------------------------------------------------------------------
 
 SWEEP_PROMPT = """\
-You are Claude. You are accessing a discord channel via a discord bot. You are performing a memory review for yourself. Below are two inputs:
+You are Claude. You are performing a memory review after a Discord session. You have two memory stores:
 
-1. The current memory file
-2. The messages from the previous session
+1. **Core memory** (core_memory.md) — always-loaded identity-level facts. Keep this under 15 lines. Only enduring facts belong here (who people are, key relationships, your own identity). If something is situational or temporary, it belongs in the semantic store via an ADD operation.
 
-Your job is to output an updated version of the complete memory file. Follow these rules:
+2. **Semantic memory store** — retrieved by similarity per-message. Each entry has an ID. You manage this through operations (ADD, UPDATE, DELETE).
 
+Your job is to review the session and output TWO sections:
 
+## Output format
 
-PROMOTION:
-- If a Scratch item came up multiple times or proved important, promote it to Active Context.
-- If an Active Context item has been consistently relevant across sessions or represents something enduring, promote it to Identity.
+```
+=== CORE MEMORY ===
+- fact 1
+- fact 2
+...
 
-DEMOTION / PRUNING:
-- If a Scratch item seems trivial, one-off, or irrelevant in hindsight, remove it.
-- If an Active Context item hasn't been relevant and seems stale, demote it to Scratch or remove it.
-- Identity items should only be removed if they are clearly wrong or outdated.
+=== OPERATIONS ===
+ADD: "new memory text"
+UPDATE: <id> -> "updated text"
+DELETE: <id>
 
-NEW ENTRIES:
-- Add new Scratch items for notable things from the session: preferences expressed, facts shared, projects mentioned, emotional context, anything that might matter later.
-- Add entries to your section for self-correction notes, behavioral feedback, or operational observations.
+SUMMARY: brief description of what changed
+```
 
-GENERAL RULES:
-- [IMPORTANT] Write casually but succintly in first person. These are your memories for you.
-- Keep the file under 100 lines.
-- Be aggressive about pruning. A tight file is more valuable than a comprehensive one.
-- Preserve the exact file structure and formatting.
-- Every entry should be a single concise line.
-- When in doubt about importance, keep it in Scratch for one more cycle rather than promoting.
+## Rules
 
-Output ONLY the updated memory file, followed by a blank line, then a single line in this format:
-SUMMARY: [brief natural language description of what changed]
+CORE MEMORY:
+- Rewrite the entire core memory section. It replaces the file wholesale.
+- Only enduring identity-level facts. Situational stuff goes in semantic memory.
+- Write casually in first person. These are your memories for you.
 
-<current_memory_file>
-{memory}
-</current_memory_file>
+OPERATIONS:
+- ADD notable things from the session: facts, preferences, events, emotional context.
+- UPDATE entries that are now outdated or incomplete based on the session.
+- DELETE entries that are clearly wrong, stale, or superseded.
+- Each ADD/UPDATE/DELETE on its own line.
+- Be aggressive about pruning stale entries. A tight store is more valuable than a comprehensive one.
+
+CONFLICT RESOLUTION:
+- These memories were surfaced during the session: {injected_ids_text}
+- If the conversation contradicts any of them, UPDATE or DELETE them.
+- If core memory needs updating based on the session, update it.
+
+GENERAL:
+- Every memory entry should be a single concise line.
+- Write casually but succinctly in first person.
+- Output ONLY the format above, nothing else.
+
+<current_core_memory>
+{core_memory}
+</current_core_memory>
+
+<semantic_memories>
+{semantic_memories}
+</semantic_memories>
 
 <previous_session_messages>
 {messages}
@@ -160,6 +185,27 @@ async def collect_previous_session(
     return session_msgs
 
 
+async def collect_since_last_sweep(
+    channel: discord.abc.Messageable,
+    bot_user: discord.User,
+) -> list[dict[str, str]]:
+    """Collect all messages since the last sweep time. Used for manual sweeps."""
+    last_sweep = await memory_store.get_last_sweep_time(channel.id)
+    session_msgs: list[dict[str, str]] = []
+
+    async for msg in channel.history(limit=MAX_MESSAGES_SANITY):
+        if msg.type not in (discord.MessageType.default, discord.MessageType.reply):
+            continue
+        if last_sweep and msg.created_at <= last_sweep:
+            break
+
+        author = "Assistant" if msg.author == bot_user else msg.author.display_name
+        session_msgs.append(dict(author=author, content=msg.content))
+
+    session_msgs.reverse()
+    return session_msgs
+
+
 # ---------------------------------------------------------------------------
 # Memory sweep
 # ---------------------------------------------------------------------------
@@ -169,6 +215,9 @@ async def run_memory_sweep(
     session_msgs: list[dict[str, str]],
     openai_client: AsyncOpenAI,
     model: str,
+    injected_ids: set[str] | None = None,
+    embedding_model: str | None = None,
+    embedding_client: AsyncOpenAI | None = None,
     **api_kwargs,
 ) -> None:
     """Run the memory sweep on a list of session messages."""
@@ -178,48 +227,58 @@ async def run_memory_sweep(
 
     await channel.send("🧠 Memory formation in progress...")
 
-    memory_content = memory_store.load()
+    # Build prompt inputs
+    core_memory = load_core_memory()
+    active_memories = get_active_memories()
+    semantic_memories_text = "\n".join(
+        f"[{m['id']}] {m['text']}" for m in active_memories
+    ) or "(no entries yet)"
+
     messages_text = "\n".join(f"[{m['author']}]: {m['content']}" for m in session_msgs)
 
-    prompt = SWEEP_PROMPT.replace("{memory}", memory_content).replace("{messages}", messages_text)
+    # Build injected IDs reference
+    injected = injected_ids or set()
+    if injected:
+        injected_entries = [m for m in active_memories if m["id"] in injected]
+        injected_ids_text = "\n".join(
+            f"[{m['id']}] {m['text']}" for m in injected_entries
+        )
+    else:
+        injected_ids_text = "(none)"
+
+    prompt = (
+        SWEEP_PROMPT
+        .replace("{core_memory}", core_memory)
+        .replace("{semantic_memories}", semantic_memories_text)
+        .replace("{messages}", messages_text)
+        .replace("{injected_ids_text}", injected_ids_text)
+    )
 
     try:
         resp = await openai_client.chat.completions.create(
             model=model,
             messages=[dict(role="user", content=prompt)],
-            max_tokens=2000,
+            max_tokens=3000,
             extra_headers=api_kwargs.get("extra_headers"),
             extra_query=api_kwargs.get("extra_query"),
             extra_body=api_kwargs.get("extra_body"),
         )
         output = resp.choices[0].message.content.strip()
 
-        lines = output.split("\n")
-        summary_line = ""
-        memory_lines = []
-        for i, line in enumerate(lines):
-            if line.startswith("SUMMARY:"):
-                summary_line = line[len("SUMMARY:"):].strip()
-                memory_lines = lines[:i]
-                break
-        else:
-            memory_lines = lines
-            summary_line = "no summary provided"
+        # Use the embedding client for operations (ADD/UPDATE need embeddings)
+        emb_client = embedding_client or openai_client
+        emb_model = embedding_model or model
 
-        while memory_lines and memory_lines[-1].strip() == "":
-            memory_lines.pop()
-
-        new_memory = "\n".join(memory_lines) + "\n"
-        memory_store.save(new_memory)
+        summary = await execute_sweep_operations(output, emb_client, emb_model)
 
         await memory_store.set_last_sweep_time(channel.id, datetime.now(timezone.utc))
 
-        if summary_line:
-            await channel.send(f"🧠 Memory updated — {summary_line}")
+        if summary:
+            await channel.send(f"🧠 Memory updated — {summary}")
         else:
             await channel.send("🧠 Memory reviewed — no updates.")
 
-        logging.info(f"Memory sweep complete: {summary_line}")
+        logging.info(f"Memory sweep complete: {summary}")
 
     except Exception:
         logging.exception("Memory sweep failed")
@@ -235,9 +294,15 @@ async def check_and_run_memory_sweep(
     bot_user: discord.User,
     openai_client: AsyncOpenAI,
     model: str,
+    injected_ids: set[str] | None = None,
+    embedding_model: str | None = None,
+    embedding_client: AsyncOpenAI | None = None,
     **api_kwargs,
-) -> None:
-    """Detect a session gap and run a memory sweep on the previous session if needed."""
+) -> bool:
+    """Detect a session gap and run a memory sweep on the previous session if needed.
+
+    Returns True if a session gap was detected (new session started).
+    """
     try:
         prev_msgs = [m async for m in new_msg.channel.history(limit=1, before=new_msg)]
         if prev_msgs:
@@ -245,6 +310,14 @@ async def check_and_run_memory_sweep(
             if gap >= SESSION_GAP_SECONDS:
                 session_msgs = await collect_previous_session(new_msg.channel, new_msg, bot_user)
                 if session_msgs:
-                    await run_memory_sweep(new_msg.channel, session_msgs, openai_client, model, **api_kwargs)
+                    await run_memory_sweep(
+                        new_msg.channel, session_msgs, openai_client, model,
+                        injected_ids=injected_ids,
+                        embedding_model=embedding_model,
+                        embedding_client=embedding_client,
+                        **api_kwargs,
+                    )
+                return True
     except Exception:
         logging.exception("Error checking session gap")
+    return False

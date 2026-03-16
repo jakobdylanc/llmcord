@@ -23,6 +23,7 @@ interjection_model: openrouter/google/gemma-3-4b-it:free
 permissions:
   users:
     admin_ids: []
+    sweep_ids: []
     allowed_ids: []
     blocked_ids: []
 

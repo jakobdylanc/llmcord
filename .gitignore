@@ -6,6 +6,7 @@
 
 !*.md
 memory.md
+core_memory.md
 !*.py
 
 !Dockerfile

@@ -16,7 +16,8 @@ import httpx
 from openai import AsyncOpenAI
 import yaml
 
-from memory import memory_store, check_and_run_memory_sweep
+from memory import memory_store, check_and_run_memory_sweep, collect_since_last_sweep, run_memory_sweep
+from semantic_memory import load_core_memory, retrieve_memories
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,6 +92,7 @@ msg_nodes: dict[int, "MsgNode"] = {}
 last_task_time = 0
 active_channels: set[int] = set()
 channel_locks: dict[int, asyncio.Lock] = {}
+session_injected_ids: dict[int, set[str]] = {}  # channel_id -> set of memory IDs injected this session
 
 
 intents = discord.Intents.default()
@@ -482,15 +484,16 @@ def build_system_prompt(cfg: dict) -> str | None:
     now = datetime.now().astimezone()
     system_prompt = system_prompt.replace("{date}", now.strftime("%B %d %Y")).replace("{time}", now.strftime("%H:%M:%S %Z%z")).strip()
 
-    memory_content = memory_store.load()
-    if memory_content.strip():
+    core_memory = load_core_memory()
+    if core_memory.strip():
         system_prompt += (
-            "\n\nYou have a persistent memory system. Below are your current memories. "
+            "\n\nYou have a persistent memory system. Below are your core memories — enduring identity-level facts. "
             "Use them naturally — don't reference the system itself, don't announce what you remember unless it's relevant. "
             "Just let the context inform how you respond.\n\n"
-            "If a memory seems outdated or contradicted by the current conversation, note it internally. "
-            "It will be reviewed at the end of the session.\n\n"
-            f"<memories>\n{memory_content}</memories>"
+            "Additional memories may be attached to individual messages based on relevance. "
+            "If any memory seems outdated or contradicted by the conversation, note it internally — "
+            "it will be reviewed at the end of the session.\n\n"
+            f"<core_memory>\n{core_memory}</core_memory>"
         )
 
     return system_prompt
@@ -726,6 +729,59 @@ async def model_autocomplete(interaction: discord.Interaction, curr_str: str) ->
     return choices[:25]
 
 
+@discord_bot.tree.command(name="sweep", description="Manually trigger a memory sweep on messages since the last sweep")
+async def sweep_command(interaction: discord.Interaction) -> None:
+    cfg = await asyncio.to_thread(get_config)
+
+    admin_ids = cfg["permissions"]["users"]["admin_ids"]
+    sweep_ids = cfg["permissions"]["users"].get("sweep_ids", [])
+    if interaction.user.id not in admin_ids and interaction.user.id not in sweep_ids:
+        await interaction.response.send_message("You don't have permission to do that.", ephemeral=True)
+        return
+
+    await interaction.response.send_message("🧠 Manual sweep starting...", ephemeral=True)
+
+    # Set up LLM client (same as on_message)
+    provider_slash_model = curr_model
+    provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
+    provider_config = cfg["providers"][provider]
+    openai_client = AsyncOpenAI(
+        base_url=provider_config["base_url"],
+        api_key=provider_config.get("api_key", "sk-no-key-required"),
+    )
+    extra_headers = provider_config.get("extra_headers")
+    extra_query = provider_config.get("extra_query")
+    model_parameters = cfg["models"].get(provider_slash_model, None)
+    extra_body = (provider_config.get("extra_body") or {}) | (model_parameters or {}) or None
+
+    # Set up embedding client
+    embedding_model_full = cfg.get("embedding_model")
+    emb_client = None
+    emb_model = None
+    if embedding_model_full:
+        emb_provider, emb_model = embedding_model_full.split("/", 1)
+        emb_provider_config = cfg["providers"][emb_provider]
+        emb_client = AsyncOpenAI(
+            base_url=emb_provider_config["base_url"],
+            api_key=emb_provider_config.get("api_key", "sk-no-key-required"),
+        )
+
+    # Collect and sweep
+    session_msgs = await collect_since_last_sweep(interaction.channel, discord_bot.user)
+    channel_injected = session_injected_ids.get(interaction.channel.id, set())
+
+    await run_memory_sweep(
+        interaction.channel, session_msgs, openai_client, model,
+        injected_ids=channel_injected,
+        embedding_model=emb_model,
+        embedding_client=emb_client,
+        extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body,
+    )
+
+    # Clear injected IDs for this channel since we just swept
+    session_injected_ids.pop(interaction.channel.id, None)
+
+
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
@@ -793,11 +849,66 @@ async def on_message(new_msg: discord.Message) -> None:
 
         logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
+        # --- Embedding client setup ---
+        embedding_model_full = cfg.get("embedding_model")
+        emb_client = None
+        emb_model = None
+        if embedding_model_full:
+            emb_provider, emb_model = embedding_model_full.split("/", 1)
+            emb_provider_config = cfg["providers"][emb_provider]
+            emb_client = AsyncOpenAI(
+                base_url=emb_provider_config["base_url"],
+                api_key=emb_provider_config.get("api_key", "sk-no-key-required"),
+            )
+
         # --- Memory sweep ---
-        await check_and_run_memory_sweep(
+        channel_injected = session_injected_ids.get(new_msg.channel.id, set())
+        new_session = await check_and_run_memory_sweep(
             new_msg, discord_bot.user, openai_client, model,
+            injected_ids=channel_injected,
+            embedding_model=emb_model,
+            embedding_client=emb_client,
             extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body,
         )
+        if new_session:
+            session_injected_ids.pop(new_msg.channel.id, None)
+
+        # --- Semantic memory retrieval ---
+        if emb_client and new_msg.content.strip():
+            try:
+                channel_injected = session_injected_ids.setdefault(new_msg.channel.id, set())
+                retrieved = await retrieve_memories(
+                    new_msg.content, emb_client, emb_model,
+                    exclude_ids=channel_injected,
+                )
+
+                if retrieved:
+                    memory_block = "\n".join(
+                        f"[Memory {m['id']}: {m['text']}]" for m in retrieved
+                    )
+                    # Append to the last user message in the chain
+                    for msg_dict in reversed(messages):
+                        if msg_dict["role"] == "user":
+                            if isinstance(msg_dict["content"], str):
+                                msg_dict["content"] += f"\n\n{memory_block}"
+                            elif isinstance(msg_dict["content"], list):
+                                for part in msg_dict["content"]:
+                                    if part.get("type") == "text":
+                                        part["text"] += f"\n\n{memory_block}"
+                                        break
+                            break
+
+                    channel_injected.update(m["id"] for m in retrieved)
+                    logging.info(f"Injected {len(retrieved)} memories: {[m['id'] for m in retrieved]}")
+
+                    # Show recalled memories in chat (subtext so it's stripped from LLM context)
+                    recall_lines = [f"-# `{m['id']}` ({m['score']:.2f}) {m['text'][:80]}" for m in retrieved]
+                    await new_msg.channel.send(
+                        f"-# 🔍 Recalled {len(retrieved)} memories:\n" + "\n".join(recall_lines)
+                    )
+
+            except Exception:
+                logging.exception("Semantic memory retrieval failed")
 
         # --- System prompt & message ordering ---
         ordered_messages = messages[::-1] if is_dm else messages
@@ -808,7 +919,7 @@ async def on_message(new_msg: discord.Message) -> None:
         openai_kwargs = dict(model=model, messages=ordered_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
 
         earliest_timestamp = int(earliest_msg_time.timestamp())
-        context_info = f"Earliest message: <t:{earliest_timestamp}:t>"
+        context_info = f"🌞 Earliest message: <t:{earliest_timestamp}:t>"
         use_plain_responses = cfg.get("use_plain_responses", False)
 
         response_msgs, full_response = await stream_response(
