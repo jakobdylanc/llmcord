@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+
+# Git
+.git/
+.gitignore
+
+# Local configs (use volume mount instead)
+.env
+config.yaml
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation that shouldn't affect build
+README.md
+LICENSE.md
+report.md
+spec.md
+SKILLS.md
+TODOLIST.md
+docs/
+explanation/
+tutorial/
+openspec/
+
+# Test files (keep test/ for local dev)
+test/
+
+# Temp files
+*.tmp
+*.swp

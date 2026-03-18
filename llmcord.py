@@ -23,7 +23,7 @@ from bot.discord.errors import notify_admin_error as core_notify_admin_error, ha
 from bot.llm.errors import parse_error_message
 from bot.llm.ollama_service import OllamaService
 from bot.llm.tools import get_openai_tools, build_brave_registry, execute_tool_call
-from bot.llm.tools.registry import get_tools
+from bot.llm.tools.registry import get_tools, build_tool_registry
 
 if os.environ.get("DEBUG"):
     logging.basicConfig(level=logging.DEBUG)

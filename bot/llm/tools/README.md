@@ -16,11 +16,13 @@ bot/llm/tools/
 ├── visuals_core.py        ← visuals_core callable + schema
 ├── yahoo_finance.py       ← stock/index prices from Yahoo Finance
 ├── google_tools.py        ← Gmail + Calendar (Google API)
+├── weather.py             ← get_weather (Open-Meteo + Nominatim)
 └── skills/
     ├── web_search.md      ← skill doc for web_search
     ├── visuals_core.md    ← skill doc for visuals_core
     ├── yahoo_finance.md   ← skill doc for get_market_prices
-    └── google_tools.md    ← skill doc for google_tools
+    ├── google_tools.md    ← skill doc for google_tools
+    └── weather.md         ← skill doc for get_weather
 ```
 
 ## How tools flow

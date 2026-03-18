@@ -18,7 +18,7 @@ The system SHALL maintain `_ENTRIES` dict mapping tool name → ToolEntry.
 
 #### Scenario: Registry
 - **WHEN** AI reads registry.py
-- **THEN** it can find: web_search, visuals_core, get_market_prices, google_tools
+- **THEN** it can find: web_search, visuals_core, get_market_prices, google_tools, get_weather
 
 ### Requirement: get_openai_tools returns tool schemas
 The system SHALL provide `get_openai_tools(tool_names)` that returns OpenAI-format schemas.

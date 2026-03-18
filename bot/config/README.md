@@ -109,7 +109,7 @@ think: true  # Optional: for reasoning models
 |-------|-------------|
 | `persona` | Persona file name (without extension) |
 | `system_prompt` | Override system prompt for this task |
-| `tools` | List of tools: `web_search`, `visuals_core`, `get_market_prices` |
+| `tools` | List of tools: `web_search`, `visuals_core`, `get_market_prices`, `get_weather` |
 | `think` | Enable reasoning mode (Ollama only) |
 | `fallback_models` | Fallback models if primary fails |
 
