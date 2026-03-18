@@ -2,7 +2,7 @@
 Shared types for bot tools.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
@@ -12,3 +12,4 @@ class ToolEntry:
     schema: dict                       # OpenAI-format schema sent to the model
     fn: Callable | None = None         # called locally when model invokes this tool
     formatter: Callable | None = None  # optional: formatter(result, args) -> str
+    keywords: list[str] = field(default_factory=list)  # keywords for dynamic tool detection

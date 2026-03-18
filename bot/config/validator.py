@@ -90,7 +90,7 @@ def validate_config(cfg: dict[str, Any], config_path: str = "config.yaml") -> No
                                 f"got {type(tools).__name__}"
                             )
                         else:
-                            valid_tools = {"web_search", "visuals_core", "get_market_prices"}
+                            valid_tools = {"web_search", "visuals_core", "get_market_prices", "get_weather"}
                             for tool in tools:
                                 if tool not in valid_tools:
                                     warnings.append(

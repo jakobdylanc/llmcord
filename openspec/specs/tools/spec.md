@@ -19,7 +19,7 @@ The system SHALL maintain a registry of available tools accessible by name.
 - **THEN** registry returns corresponding ToolEntry
 
 ### Requirement: Available tools
-The system SHALL provide web_search, visuals_core, get_market_prices, and google_tools.
+The system SHALL provide web_search, visuals_core, get_market_prices, google_tools, and get_weather.
 
 #### Scenario: Available tools
 - **WHEN** tools are needed

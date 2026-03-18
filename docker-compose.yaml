@@ -5,4 +5,7 @@ services:
     network_mode: host
     restart: unless-stopped
     volumes:
+    # Windows runtime
       - ./:/app:ro
+    # Linux runtime
+    #  - /opt/gpt-discord-bot/:/app:ro

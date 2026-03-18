@@ -129,6 +129,9 @@ def _get_discovered_tools() -> dict[str, ToolEntry]:
     global _discovered_tools
     if _discovered_tools is None:
         _discovered_tools = _discover_tools()
+        # Log on first discovery only (not on every build_tool_registry call)
+        tool_names = list(_discovered_tools.keys())
+        logging.info(f"ToolRegistry: {len(_discovered_tools)} tools available: {tool_names}")
     return _discovered_tools
 
 
@@ -155,6 +158,7 @@ def build_tool_registry() -> dict[str, ToolEntry]:
     Return a fully-wired tool registry with auto-discovered tools.
     Combines legacy static entries with dynamically discovered tools.
     Tools from files take precedence over legacy entries.
+    Keywords are merged from skill.md if available.
     """
     # Start with discovered tools (they take precedence)
     registry = dict(_get_discovered_tools())
@@ -163,10 +167,6 @@ def build_tool_registry() -> dict[str, ToolEntry]:
     for name, entry in _ENTRIES.items():
         if name not in registry:
             registry[name] = entry
-    
-    # Log available tools
-    tool_names = list(registry.keys())
-    logging.info(f"ToolRegistry: {len(registry)} tools available: {tool_names}")
     
     return registry
 
