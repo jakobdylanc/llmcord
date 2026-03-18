@@ -40,8 +40,24 @@ Always call using the full ticker format recognized by Yahoo Finance.
 ## Tool signature
 
 ```
-get_market_prices(tickers: str, days: int = 5) -> str
+get_market_prices(tickers: str, days: int = 10) -> str
 ```
+
+> **IMPORTANT**: Always use `days=10` (or higher) when calling this tool. Using values lower than 5 may result in insufficient trading days for calculating % change, especially near weekends. The default is 10 to ensure reliable data.
+
+## Output Format (IMPORTANT)
+
+The tool returns data in this exact format:
+```
+0050.TW: 77.90  +2.30 (+3.04%)  [2026-03-18]
+```
+
+**DO NOT modify the numbers** - use the exact values from the tool output:
+- **Close price**: Use exactly as shown (e.g., `77.90`)
+- **Change amount**: Use exactly as shown (e.g., `+2.30`)
+- **Percentage**: Use exactly as shown (e.g., `+3.04%`)
+
+When displaying in your response, include both the absolute change and percentage from the tool output.
 
 ## Common tickers
 
