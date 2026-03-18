@@ -17,7 +17,6 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from dotenv import load_dotenv
 from ollama import Client
 
 from .tools.registry import build_tool_registry, execute_tool_call
@@ -78,8 +77,6 @@ class OllamaService:
         """
         host — Ollama server URL
         """
-        load_dotenv()
-
         api_key = os.getenv("OLLAMA_API_KEY")
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self.client = Client(host=host, headers=headers)

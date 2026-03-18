@@ -204,6 +204,39 @@ def validate_config(cfg: dict[str, Any], config_path: str = "config.yaml") -> No
                                         f"got {type(ids).__name__}"
                                     )
     
+    # ── Validate azure-speech section (optional) ────────────────────────────
+    if "azure-speech" in cfg:
+        azure_speech = cfg["azure-speech"]
+        if azure_speech is None:
+            warnings.append("'azure-speech' is set to null (voice features will be disabled)")
+        elif not isinstance(azure_speech, dict):
+            errors.append(
+                f"'azure-speech' must be a mapping, got {type(azure_speech).__name__}"
+            )
+        else:
+            # Required fields
+            if not azure_speech.get("key"):
+                warnings.append("'azure-speech.key' is empty (TTS/STT features disabled)")
+            if not azure_speech.get("region"):
+                errors.append("'azure-speech.region' is required when azure-speech is configured")
+            
+            # Optional fields validation
+            if "default_voice" in azure_speech and azure_speech["default_voice"]:
+                if not isinstance(azure_speech["default_voice"], str):
+                    errors.append(
+                        f"'azure-speech.default_voice' must be a string, "
+                        f"got {type(azure_speech['default_voice']).__name__}"
+                    )
+            
+            if "default_style" in azure_speech and azure_speech["default_style"]:
+                valid_styles = {"cheerful", "sad", "angry", "neutral", "excited", "friendly", "terrified", "shouting", "whispering", "hopeful"}
+                style = azure_speech["default_style"]
+                if style not in valid_styles:
+                    warnings.append(
+                        f"'azure-speech.default_style' has unknown value '{style}'. "
+                        f"Valid styles: {', '.join(sorted(valid_styles))}"
+                    )
+    
     # ── Log warnings ────────────────────────────────────────────────────────
     for warning in warnings:
         logger.warning("Config warning: %s", warning)

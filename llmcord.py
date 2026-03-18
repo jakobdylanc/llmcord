@@ -2,6 +2,7 @@ import asyncio
 from base64 import b64encode
 from dataclasses import dataclass, field
 from datetime import datetime
+from dotenv import load_dotenv
 import logging
 from typing import Any, Literal, Optional
 import os
@@ -15,6 +16,9 @@ import httpx
 from openai import AsyncOpenAI
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import yaml
+
+# Load .env file at startup
+load_dotenv()
 
 from bot.config.loader import get_config as load_config_with_validation
 from bot.config.personas import try_load_persona, list_personas
@@ -79,12 +83,14 @@ curr_persona = model_params.get("persona") or config.get("persona", "")
 logging.info(f"🚀 Bot starting | models: {list(config['models'].keys())} | providers: {list(config['providers'].keys())}")
 
 msg_nodes = {}
+processed_messages: set[int] = set()  # Deduplication: track recently processed message IDs
 last_task_time = 0
 scheduler = AsyncIOScheduler()
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.dm_messages = True
+intents.voice_states = True  # Enable voice states for /join and /leave commands
 activity = discord.CustomActivity(name=(config.get("status_message") or "github.com/jakobdylanc/llmcord")[:128])
 discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=None)
 httpx_client = httpx.AsyncClient()
@@ -257,8 +263,9 @@ async def clear_command(interaction: discord.Interaction) -> None:
     if interaction.user.id not in config["permissions"]["users"]["admin_ids"]:
         await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
         return
-    global msg_nodes
+    global msg_nodes, processed_messages
     msg_nodes.clear()
+    processed_messages.clear()
     await interaction.response.send_message("✅ Conversation history cleared. Starting fresh!", ephemeral=(interaction.channel.type == discord.ChannelType.private))
     logging.info(f"Cache cleared by {interaction.user.id}")
 
@@ -475,6 +482,9 @@ async def persona_autocomplete(interaction: discord.Interaction, curr_str: str) 
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
         logging.info(f"\n\nBOT INVITE URL:\nhttps://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot\n")
+    # Load voice cog BEFORE syncing commands so its commands are included
+    from bot.voice import setup_voice_cog
+    await setup_voice_cog(discord_bot, config)
     # Sync to all guilds
     await discord_bot.tree.sync()
     # Log all registered commands
@@ -490,8 +500,28 @@ async def on_ready() -> None:
 async def on_message(new_msg: discord.Message) -> None:
     global last_task_time
 
+    # CRITICAL: Check if message is from ourselves FIRST, before any processing
+    # This must be first to prevent processing our own messages (which trigger on_message when we reply)
+    if discord_bot.user and new_msg.author.id == discord_bot.user.id:
+        return
+
+    # Deduplication: prevent processing the same message twice
+    if new_msg.id in processed_messages:
+        logging.warning(f"DUPLICATE_BLOCK: msg_id={new_msg.id} author={new_msg.author.id} already processed")
+        return
+    processed_messages.add(new_msg.id)
+    # Keep set bounded
+    if len(processed_messages) > 1000:
+        processed_messages.clear()
+        processed_messages.add(new_msg.id)
+
+    # DEBUG: Log message start
+    content_preview = new_msg.content[:50].replace('\n', ' ')
+    logging.info(f"MSG_START: msg_id={new_msg.id} author={new_msg.author.id} channel={new_msg.channel.id} content='{content_preview}...'")
+
     is_dm = new_msg.channel.type == discord.ChannelType.private
     if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
+        logging.debug(f"MSG_SKIP: msg_id={new_msg.id} is_dm={is_dm} mentioned={discord_bot.user in new_msg.mentions} is_bot={new_msg.author.bot}")
         return
 
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
@@ -541,6 +571,29 @@ async def on_message(new_msg: discord.Message) -> None:
                     *[httpx_client.get(a.url) for a in good_att],
                     return_exceptions=True,
                 )
+                
+                # Handle voice message attachments (audio/ogg)
+                voice_attachments = [a for a in curr_msg.attachments if a.content_type and a.content_type.startswith("audio")]
+                voice_transcriptions = []
+                if voice_attachments:
+                    # Try to get STT service
+                    from bot.voice import create_stt, get_voice_config
+                    voice_config = get_voice_config(config)
+                    stt_service = create_stt(voice_config) if voice_config else None
+                    
+                    if stt_service:
+                        for va in voice_attachments:
+                            try:
+                                audio_resp = await httpx_client.get(va.url)
+                                if audio_resp.status_code == 200:
+                                    transcribed = stt_service.transcribe(audio_resp.content)
+                                    if transcribed:
+                                        voice_transcriptions.append(f"[Voice message: {transcribed}]")
+                            except Exception as e:
+                                logging.warning(f"Failed to transcribe voice message: {e}")
+                    else:
+                        logging.debug("STT not configured, voice messages will be ignored")
+                
                 curr_node.text = "\n".join(
                     ([cleaned] if cleaned else [])
                     + ["\n".join(filter(None, (e.title, e.description, e.footer.text))) for e in curr_msg.embeds]
@@ -550,6 +603,7 @@ async def on_message(new_msg: discord.Message) -> None:
                         for a, r in zip(good_att, att_resps)
                         if not isinstance(r, Exception) and a.content_type.startswith("text")
                     ]
+                    + voice_transcriptions
                 )
                 curr_node.images = [
                     dict(type="image_url", image_url=dict(url=f"data:{a.content_type};base64,{b64encode(r.content).decode()}"))
@@ -599,6 +653,12 @@ async def on_message(new_msg: discord.Message) -> None:
             if curr_node.has_bad_attachments: user_warnings.add("⚠️ Unsupported attachments")
             if curr_node.fetch_parent_failed or (curr_node.parent_msg and len(messages) == max_messages):
                 user_warnings.add(f"⚠️ Only using last {len(messages)} message{'s' if len(messages) != 1 else ''}")
+            
+            # Stop following parent chain if we reach a bot message to prevent feedback loop
+            # This prevents the bot from seeing its own previous responses and responding to them
+            if curr_msg.author == discord_bot.user:
+                break
+            
             curr_msg = curr_node.parent_msg
 
     logging.info(f"Message (uid:{new_msg.author.id}, att:{len(new_msg.attachments)}, len:{len(messages)}): {new_msg.content}")
@@ -650,6 +710,9 @@ async def on_message(new_msg: discord.Message) -> None:
         response_msgs.append(msg)
         msg_nodes[msg.id] = MsgNode(parent_msg=new_msg)
         await msg_nodes[msg.id].lock.acquire()
+        # DEBUG: Log every reply sent
+        content_preview = str(kw.get('content', ''))[:30] or (str(kw.get('embed').description)[:30] if kw.get('embed') else 'N/A')
+        logging.warning(f"REPLY_SENT: #{len(response_msgs)} reply_msg_id={msg.id} target_msg_id={target.id} content='{content_preview}...'")
 
     # ── Helper: run one OpenAI-compat model with streaming ──────────────────
 
@@ -844,6 +907,9 @@ async def on_message(new_msg: discord.Message) -> None:
         for mid in sorted(msg_nodes.keys())[:n - MAX_MESSAGE_NODES]:
             async with msg_nodes.setdefault(mid, MsgNode()).lock:
                 msg_nodes.pop(mid, None)
+
+    # DEBUG: Log message completion
+    logging.info(f"MSG_END: msg_id={new_msg.id} responses_sent={len(response_msgs)} total_processed={len(processed_messages)}")
 
 
 # ── Scheduled tasks ──────────────────────────────────────────────────────────

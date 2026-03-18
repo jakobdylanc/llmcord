@@ -13,8 +13,32 @@ Discord bot that connects to multiple LLM providers (OpenRouter, Ollama, Open We
 | [SKILLS.md](SKILLS.md) | Skill index (tools the bot can use); see also `bot/llm/tools/skills/`. |
 | [bot/config/README.md](bot/config/README.md) | Personas and scheduled tasks (format, fields, cron). |
 | [bot/llm/tools/README.md](bot/llm/tools/README.md) | How to add a new tool. |
+| [docs/azure-speech.md](docs/azure-speech.md) | Azure Speech (TTS/STT) configuration. |
 
 > **For AI/Agents**: Read [OpenSpec](openspec/specs/) to understand current state, APIs, and data models.
+
+---
+
+### Quick Start
+
+```bash
+# 1. Clone and install
+git clone https://github.com/ckw1206/gpt-discord-bot
+cd gpt-discord-bot
+pip install -r requirements.txt
+
+# 2. Copy config
+copy config-example.yaml config.yaml
+
+# 3. Add your bot token and LLM provider keys to config.yaml
+
+# 4. Run
+python llmcord.py
+```
+
+Then mention the bot in Discord to start chatting!
+
+---
 
 ### Layout
 
@@ -112,6 +136,25 @@ models:
 Each tool has a skill doc under `bot/llm/tools/skills/` in [OpenClaw](https://clawhub.sh) format. When a tool is enabled for a model, its skill doc is automatically injected into the system prompt so the model knows exactly when and how to call it — no manual prompting needed.
 
 To add a new tool, see [`bot/llm/tools/README.md`](bot/llm/tools/README.md).
+
+---
+
+### Voice features (TTS/STT)
+
+The bot supports voice interactions using Azure Speech Services:
+
+- **Text-to-Speech (TTS)**: Bot can speak responses in voice channels
+- **Speech-to-Text (STT)**: Bot can transcribe voice messages in text channels and DMs
+
+#### Voice commands
+
+| Command | Description | Admin |
+|:--------|:------------|:-----:|
+| `/join` | Join your voice channel | - |
+| `/leave` | Leave the current voice channel | - |
+| `/speak <text>` | Make the bot speak in voice channel | - |
+
+Enable voice features by adding Azure Speech credentials to `config.yaml`. See [`docs/azure-speech.md`](docs/azure-speech.md) for setup instructions.
 
 ---
 

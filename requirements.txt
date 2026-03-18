@@ -1,4 +1,5 @@
-discord.py>=2.6.0
+discord.py[voice]>=2.7.1
+PyNaCl
 httpx
 openai
 pyyaml
@@ -12,3 +13,4 @@ yfinance
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
+azure-cognitiveservices-speech>=1.40.0

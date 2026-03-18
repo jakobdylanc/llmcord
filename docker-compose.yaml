@@ -5,7 +5,7 @@ services:
     network_mode: host
     restart: unless-stopped
     volumes:
-    # Windows runtime
-      - ./:/app:ro
-    # Linux runtime
-    #  - /opt/gpt-discord-bot/:/app:ro
+      - ./:/app:rw
+    environment:
+      - AZURE_SPEECH_KEY=${AZURE_SPEECH_KEY}
+      - AZURE_SPEECH_REGION=${AZURE_SPEECH_REGION}

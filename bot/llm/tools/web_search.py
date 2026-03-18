@@ -22,9 +22,6 @@ import time
 import threading as _threading
 
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
 
 
 # ── Brave API ─────────────────────────────────────────────────────────────────
