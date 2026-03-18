@@ -23,6 +23,13 @@ The system SHALL validate config and fail startup if required fields are missing
 - **WHEN** config is loaded
 - **THEN** validator.py checks: providers exists, models exists, each model has valid provider
 
+### Requirement: Persona loaded from file
+The system SHALL load personas from `bot/config/personas/<name>.(md|txt|yaml|yml)`.
+
+#### Scenario: Load persona
+- **WHEN** persona: bao is configured
+- **THEN** loads bot/config/personas/bao.md
+
 ## Config File
 
 Default: `config.yaml` (or path from CONFIG_PATH env)
