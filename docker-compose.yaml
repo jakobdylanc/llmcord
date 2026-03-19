@@ -2,10 +2,25 @@ services:
   container:
     build: .
     container_name: gpt-discord-bot
-    network_mode: host
+    ports:
+      - "${PORT:-8080}:8080"
     restart: unless-stopped
     volumes:
       - ./:/app:rw
+      - portal_data:/app/data
     environment:
       - AZURE_SPEECH_KEY=${AZURE_SPEECH_KEY}
       - AZURE_SPEECH_REGION=${AZURE_SPEECH_REGION}
+      # Portal configuration
+      - PORT=${PORT:-8080}
+    # Health check for container orchestration (21.2.1)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# Volume for portal database persistence (21.2.2)
+volumes:
+  portal_data:

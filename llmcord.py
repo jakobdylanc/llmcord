@@ -28,6 +28,9 @@ from bot.llm.errors import parse_error_message
 from bot.llm.ollama_service import OllamaService
 from bot.llm.tools import get_openai_tools, build_brave_registry, execute_tool_call
 from bot.llm.tools.registry import get_tools, build_tool_registry
+from bot.web.server import run_web_server
+from bot.web.log_handler import init_logging
+from bot.web.routes.status import set_discord_bot, mark_bot_ready
 
 if os.environ.get("DEBUG"):
     logging.basicConfig(level=logging.DEBUG)
@@ -91,6 +94,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.dm_messages = True
 intents.voice_states = True  # Enable voice states for /join and /leave commands
+intents.guilds = True  # Required to access guild channels via get_channel()
 activity = discord.CustomActivity(name=(config.get("status_message") or "github.com/jakobdylanc/llmcord")[:128])
 discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=None)
 httpx_client = httpx.AsyncClient()
@@ -494,6 +498,28 @@ async def on_ready() -> None:
         scheduler.start()
         setup_scheduled_tasks()
         logging.info("Scheduler started")
+    # Register bot with web portal status
+    try:
+        set_discord_bot(discord_bot)
+        mark_bot_ready(True)
+        
+        # Also register bot reference for presence updates (Task 16.5)
+        from bot.web.routes.status import set_discord_bot_ref
+        set_discord_bot_ref(discord_bot)
+        
+        logging.info("Bot registered with web portal")
+        
+        # Register config references for web portal refresh
+        from bot.web.routes.status import register_config_refs
+        register_config_refs(config, curr_model, curr_persona)
+        logging.info("Config refs registered with web portal")
+        
+        # Register scheduler reference for task reload via web portal
+        from bot.web.routes.tasks import set_scheduler_ref
+        set_scheduler_ref(scheduler)
+        logging.info("Scheduler registered with web portal")
+    except Exception as e:
+        logging.error(f"Failed to register with web portal: {e}", exc_info=True)
 
 
 @discord_bot.event
@@ -918,25 +944,171 @@ async def run_scheduled_task(task_name: str, task_config: dict[str, Any]) -> str
     if not task_config.get("enabled", False):
         return
 
+    # Handle both string and integer IDs (YAML may store as string to preserve precision)
     channel_id = task_config.get("channel_id")
     user_id = task_config.get("user_id")
+    
+    # Convert string IDs to integers (Discord API expects integers)
+    if channel_id:
+        channel_id = int(channel_id) if isinstance(channel_id, str) else channel_id
+    if user_id:
+        user_id = int(user_id) if isinstance(user_id, str) else user_id
+    
     model_name = task_config.get("model") or curr_model
     prompt = task_config.get("prompt", "Check my emails")
 
-    if channel_id:
-        target = discord_bot.get_channel(channel_id)
-        if not target:
-            logging.warning(f"Task '{task_name}': channel {channel_id} not found"); return
-    elif user_id:
-        target = discord_bot.get_user(user_id)
-        if not target:
-            try: target = await discord_bot.fetch_user(user_id)
-            except discord.NotFound:
-                logging.warning(f"Task '{task_name}': user {user_id} not found"); return
-        if target.bot:
-            logging.warning(f"Task '{task_name}': cannot DM bots"); return
-    else:
-        logging.warning(f"Task '{task_name}': no channel_id or user_id"); return
+    # Initial wait for Discord connection and user cache to populate
+    # APScheduler may trigger tasks before bot is fully ready and user cache populated
+    await asyncio.sleep(10)
+
+    # Get target (channel or user) with retry logic for Discord API instability
+    target = None
+    target_user_id = None  # Store for httpx DM fallback
+    use_httpx_dm = False  # Flag: use httpx for DM if Discord HTTP unavailable
+    max_retries = 3
+    retry_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            if channel_id:
+                target = discord_bot.get_channel(channel_id)
+                if not target:
+                    # Try fetching via httpx_client using Discord API directly
+                    try:
+                        bot_token = config.get("bot_token")
+                        headers = {"Authorization": f"Bot {bot_token}"}
+                        response = await httpx_client.get(
+                            f"https://discord.com/api/v10/channels/{channel_id}",
+                            headers=headers,
+                            timeout=10.0
+                        )
+                        if response.status_code == 200:
+                            channel_data = response.json()
+                            # Create a proxy object that supports send()
+                            # For text channels, we can use the API to send messages
+                            class HttpxChannel:
+                                def __init__(self, data, http_session):
+                                    self.id = int(data['id'])
+                                    self.type = data.get('type', 0)
+                                    self._http = http_session
+                                    self._bot_token = bot_token
+                                
+                                async def send(self, content: str):
+                                    # Send message via REST API
+                                    headers = {"Authorization": f"Bot {self._bot_token}", "Content-Type": "application/json"}
+                                    msg_response = await self._http.post(
+                                        f"https://discord.com/api/v10/channels/{self.id}/messages",
+                                        headers=headers,
+                                        json={"content": content},
+                                        timeout=10.0
+                                    )
+                                    if msg_response.status_code != 200:
+                                        raise Exception(f"Failed to send: {msg_response.status_code}")
+                            
+                            target = HttpxChannel(channel_data, httpx_client)
+                        elif response.status_code == 404:
+                            logging.warning(f"Task '{task_name}': channel {channel_id} not found")
+                            return
+                        else:
+                            raise Exception(f"HTTP {response.status_code}")
+                    except Exception as e:
+                        logging.warning(f"Task '{task_name}': error fetching channel {channel_id}: {e}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        else:
+                            return
+            elif user_id:
+                target = discord_bot.get_user(user_id)
+                target_user_id = user_id
+                if not target:
+                    # Try fetching via httpx_client using Discord API directly
+                    try:
+                        bot_token = config.get("bot_token")
+                        headers = {"Authorization": f"Bot {bot_token}"}
+                        response = await httpx_client.get(
+                            f"https://discord.com/api/v10/users/{user_id}",
+                            headers=headers,
+                            timeout=10.0
+                        )
+                        if response.status_code == 200:
+                            user_data = response.json()
+                            target = discord.User(state=discord_bot._get_state(), data=user_data)
+                            use_httpx_dm = True  # Must use httpx for DM since Discord HTTP is unavailable
+                        elif response.status_code == 404:
+                            logging.warning(f"Task '{task_name}': user {user_id} not found")
+                            return
+                        else:
+                            raise Exception(f"HTTP {response.status_code}")
+                    except Exception as e:
+                        logging.warning(f"Task '{task_name}': error fetching user {user_id}: {e}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        else:
+                            return
+                if target.bot:
+                    logging.warning(f"Task '{task_name}': cannot DM bots"); return
+            else:
+                logging.warning(f"Task '{task_name}': no channel_id or user_id"); return
+            # Success - break out of retry loop
+            break
+        except AttributeError as e:
+            # Handle "has no attribute" errors (e.g., _MissingSentinel)
+            # This can happen when HTTP session isn't fully initialized
+            if attempt < max_retries - 1:
+                logging.warning(f"Task '{task_name}': attribute error (bot not fully ready): {e}, retrying...")
+                await asyncio.sleep(retry_delay)
+                continue
+            else:
+                logging.warning(f"Task '{task_name}': attribute error after {max_retries} retries: {e}"); return
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logging.warning(f"Task '{task_name}': error: {e}, retrying...")
+                await asyncio.sleep(retry_delay)
+                continue
+            else:
+                logging.warning(f"Task '{task_name}': error after {max_retries} retries: {e}"); return
+    
+    # If we exited loop due to exhausting retries without getting target
+    if target is None:
+        logging.warning(f"Task '{task_name}': failed to get target after {max_retries} retries")
+        return
+
+    # Helper to send DM via httpx when Discord HTTP is unavailable
+    async def send_dm_via_httpx(message: str) -> bool:
+        """Send DM via Discord REST API using httpx."""
+        try:
+            bot_token = config.get("bot_token")
+            headers = {"Authorization": f"Bot {bot_token}", "Content-Type": "application/json"}
+            # Create DM channel first via REST API
+            dm_response = await httpx_client.post(
+                "https://discord.com/api/v10/users/@me/channels",
+                headers=headers,
+                json={"recipient_id": str(target_user_id)},
+                timeout=10.0
+            )
+            if dm_response.status_code != 200:
+                logging.error(f"Task '{task_name}': Failed to create DM channel: {dm_response.status_code}")
+                return False
+            dm_channel = dm_response.json()
+            channel_id = dm_channel.get("id")
+            
+            # Send message to DM channel
+            msg_response = await httpx_client.post(
+                f"https://discord.com/api/v10/channels/{channel_id}/messages",
+                headers=headers,
+                json={"content": message},
+                timeout=10.0
+            )
+            if msg_response.status_code == 200:
+                return True
+            else:
+                logging.error(f"Task '{task_name}': Failed to send DM: {msg_response.status_code}")
+                return False
+        except Exception as e:
+            logging.error(f"Task '{task_name}': httpx DM send error: {e}")
+            return False
 
     provider, model = model_name.removesuffix(":vision").split("/", 1)
     provider_cfg = config["providers"][provider]
@@ -1048,15 +1220,44 @@ async def run_scheduled_task(task_name: str, task_config: dict[str, Any]) -> str
                     if ai == len(models_to_try) - 1: raise
 
         max_send = 2000  # Discord limit
+        
         if response_text:
             for i in range(0, len(response_text), max_send):
+                chunk = response_text[i:i+max_send]
                 try:
-                    await target.send(response_text[i:i+max_send])
+                    if use_httpx_dm:
+                        # Use httpx for DM when Discord HTTP is unavailable
+                        if not await send_dm_via_httpx(chunk):
+                            logging.error(f"Task '{task_name}': Failed to send DM via httpx")
+                            return
+                    else:
+                        await target.send(chunk)
+                except AttributeError as e:
+                    # Fallback to httpx if target.send fails with _MissingSentinel
+                    if "is_set" in str(e):
+                        logging.warning(f"Task '{task_name}': Discord HTTP unavailable, using httpx fallback")
+                        if not await send_dm_via_httpx(chunk):
+                            return
+                    else:
+                        raise
                 except discord.Forbidden:
                     logging.error(f"Task '{task_name}': Cannot DM user {user_id} (DMs disabled/blocked)"); return
             logging.info(f"Task '{task_name}' sent to {'channel ' + str(channel_id) if channel_id else 'user ' + str(user_id)}")
         else:
-            await target.send(f"📧 No response from task '{task_name}'")
+            no_response_msg = f"📧 No response from task '{task_name}'"
+            if use_httpx_dm:
+                if not await send_dm_via_httpx(no_response_msg):
+                    return
+            else:
+                try:
+                    await target.send(no_response_msg)
+                except AttributeError as e:
+                    if "is_set" in str(e):
+                        logging.warning(f"Task '{task_name}': Discord HTTP unavailable, using httpx fallback")
+                        if not await send_dm_via_httpx(no_response_msg):
+                            return
+                    else:
+                        raise
 
     except (asyncio.TimeoutError, discord.errors.HTTPException, Exception) as e:
         if isinstance(e, asyncio.TimeoutError):
@@ -1067,8 +1268,21 @@ async def run_scheduled_task(task_name: str, task_config: dict[str, Any]) -> str
         else:
             logging.exception(f"Task '{task_name}' failed")
             await notify_admin_error(e, f"Task '{task_name}' failed (all models)")
+        
+        error_msg = f"❌ Task '{task_name}' 無法完成，已通知管理員。"
         try:
-            await target.send(f"❌ Task '{task_name}' 無法完成，已通知管理員。")
+            if use_httpx_dm or target_user_id:
+                # Use httpx for DM when Discord HTTP is unavailable
+                await send_dm_via_httpx(error_msg)
+            else:
+                await target.send(error_msg)
+        except AttributeError as e:
+            # Fallback to httpx if Discord HTTP unavailable
+            if "is_set" in str(e):
+                logging.warning(f"Task '{task_name}': Discord HTTP unavailable, using httpx fallback for error DM")
+                await send_dm_via_httpx(error_msg)
+            else:
+                pass
         except Exception:
             pass
 
@@ -1112,7 +1326,24 @@ def setup_scheduled_tasks() -> None:
 
 
 async def main() -> None:
-    await discord_bot.start(config["bot_token"])
+    # Initialize logging with database handler (for web portal logs)
+    init_logging()
+    
+    # Start web server in background task if portal is enabled
+    portal_config = config.get("portal", {})
+    web_server_task = None
+    if portal_config.get("enabled", False):
+        web_server_task = asyncio.create_task(
+            asyncio.to_thread(run_web_server)
+        )
+    
+    # Start the Discord bot
+    try:
+        await discord_bot.start(config["bot_token"])
+    finally:
+        # Cancel web server task on bot shutdown
+        if web_server_task and not web_server_task.done():
+            web_server_task.cancel()
 
 
 if __name__ == "__main__":

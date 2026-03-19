@@ -1,0 +1,34 @@
+schema: spec-driven
+created: 2026-03-18
+updated: 2026-03-18
+status: active
+phases:
+  - phase: 1
+    name: "Bug Fixes & Status Improvements"
+    description: "Fix config [object Object] display, rename status fields, add bot avatar, three-button config"
+  - phase: 2
+    name: "Servers Detail Page"
+    description: "Server detail subpage with member/channel lists, icon, permission management"
+  - phase: 3
+    name: "Persona Management"
+    description: "Full CRUD for personas with markdown editor, file storage in bot/config/personas/"
+  - phase: 4
+    name: "Task Management"
+    description: "Full CRUD for tasks with YAML editor, enable/disable, manual execution"
+  - phase: 5
+    name: "Skills Display"
+    description: "Read-only list of available skills/tools"
+
+# Summary
+# This change adds a web-based admin portal for the llmcord Discord bot.
+# Phase 1-5 cover bug fixes and new features. Phase 1 starts immediately.
+#
+# Key features (original):
+# - FastAPI web server on port 8080
+# - SQLite database for logs and user management
+# - React frontend with login, dashboard, logs, config, servers views
+# - JWT authentication with setup wizard
+# - WebSocket for real-time logs
+# - Bot state integration
+# - Live config reload capability
+# - Docker deployment support

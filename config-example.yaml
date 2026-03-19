@@ -165,3 +165,19 @@ azure-speech:
   # endpoint: ""  # Optional: custom endpoint (only if using custom speech resource)
   # default_voice: "en-US-JennyNeural"  # Optional: default voice for TTS; zh-TW-HsiaoChenNeural for Chinese(Taiwanese)
   # default_style: "cheerful"  # Optional: default speaking style (cheerful, sad, angry, etc.)
+
+# Web Portal (optional - for web-based admin dashboard)
+#
+# Environment variables:
+#   PORT: Web server port (default: 8080)
+#   PORTAL_PASSWORD: Password for portal access
+#
+# Access at http://localhost:PORT when enabled
+portal:
+  enabled: false
+  port: ${PORT:8080}
+  password: ${PORTAL_PASSWORD:}
+  logs:
+    retention_days: 7
+    levels: [INFO, WARNING, ERROR]
+  # require_discord_admin: true  # Optional: also check Discord admin_ids

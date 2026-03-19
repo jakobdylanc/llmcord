@@ -15,8 +15,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY bot/ bot/
 COPY llmcord.py .
 COPY __init__.py .
+COPY web/ web/
 
 # Copy config (can be overridden via volume)
 COPY config-example.yaml config.yaml
+
+# Environment variables for portal
+# PORT - set to 8080 by default for web portal
+ENV PORT=8080
 
 CMD ["python", "llmcord.py"]

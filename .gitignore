@@ -48,3 +48,9 @@ bot/config/personas/*
 # Google API credentials (if used)
 credentials.json
 token.json
+
+# Web portal node_modules (dist should be tracked for deployment)
+web/node_modules/
+
+# Database
+*.db

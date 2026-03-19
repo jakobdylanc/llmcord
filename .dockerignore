@@ -42,6 +42,13 @@ config.yaml
 .DS_Store
 Thumbs.db
 
+# Web portal (need built dist folder)
+# Ignore node_modules and source, but keep dist for production
+web/node_modules/
+web/src/
+web/public/
+!web/dist/
+
 # Documentation that shouldn't affect build
 README.md
 LICENSE.md
@@ -60,3 +67,6 @@ test/
 # Temp files
 *.tmp
 *.swp
+
+# Database
+*.db
