@@ -39,6 +39,7 @@ llmcord supports remote models from:
 - [Mistral API](https://docs.mistral.ai/getting-started/models/models_overview)
 - [Groq API](https://console.groq.com/docs/models)
 - [OpenRouter API](https://openrouter.ai/models)
+- [Requesty API](https://app.requesty.ai/router)
 
 Or run local models with:
 - [Ollama](https://ollama.com)
