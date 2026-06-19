@@ -56,6 +56,10 @@ providers:
     base_url: https://openrouter.ai/api/v1
     api_key: 
 
+  requesty:
+    base_url: https://router.requesty.ai/v1
+    api_key: 
+
   x-ai:
     base_url: https://api.x.ai/v1
     api_key: 
